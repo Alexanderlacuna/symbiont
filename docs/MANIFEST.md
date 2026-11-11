@@ -20,6 +20,19 @@ receipt       14 columns of what happened, so an uploader can dry-run and then a
 ```
 Nothing else is promised. A consumer must not infer anything the manifest does not state.
 
+## 2a · THE SCHEMA IS PART OF THE CONTRACT — and an unknown one must be refused
+A contract of FIELDS is not a contract of MEANING. Two stations can agree on every field and still be incompatible, because one row could be a gene, a
+phenotype term, a microbial interaction or a paper, `accession` could point at an MGI id or a DOI, and "release" means something different per dataset.
+The manifest therefore carries the schema's **name, version and sha256**, and a consumer has one obligation:
+
+```
+REFUSED[schema-unknown]   the schema name or version in the manifest is not one this consumer implements.
+                          Do not ingest it hopefully. A verified copy of a document you cannot interpret is not data.
+```
+
+Identity is producer-scoped (`mgi:MRK_ENSEMBL` names a dataset in the producer's registry, not a global name), so what makes a federated row traceable is
+the `via:` chain, never the resemblance of a name.
+
 ## 3 · VERIFICATION DEPTH — the field that keeps a corpus honest
 Every row and every source block carries a `verified` field:
 ```
