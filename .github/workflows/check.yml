@@ -163,3 +163,15 @@ jobs:
             python3 tools/withheld-reconcile.py || true   # verbose: prints every offender by file:line
             exit "$rc"
           fi
+
+      # ── BRANCH-ONLY DIAGNOSTIC (NOT part of the deliverable; removed before the final runs) ──
+      - name: DIAGNOSTIC — republish the failure as one annotation per line
+        if: failure()
+        run: |
+          if [ -f /tmp/make-check.out ]; then
+            head -20 /tmp/make-check.out | while IFS= read -r l; do printf "::error title=HEAD::%s\n" "$l"; done
+            grep -nE 'FAIL|Error|error|Traceback|REFUSED|not set|missing' /tmp/make-check.out | head -20 \
+              | while IFS= read -r l; do printf "::error title=LINE::%s\n" "$l"; done
+            tail -8 /tmp/make-check.out | while IFS= read -r l; do printf "::error title=TAIL::%s\n" "$l"; done
+          fi
+          python3 -c "import yaml,sys;print('::error title=ENV::yaml='+yaml.__version__+' py='+sys.version.split()[0])"
