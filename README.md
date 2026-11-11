@@ -20,6 +20,19 @@ corpus over as a staged dataset plus a self-describing manifest. Nothing states 
 After acquisition the relationship continues: releases move, counts drift, sources go stale or vanish — and a source can be retired on purpose. The full
 lifecycle, the event classes, the replay rules and the rules for adding a source by hand are in [`docs/DESIGN.md`](docs/DESIGN.md).
 
+## Two surfaces — asking, and operating
+
+The station speaks MCP in two directions on purpose, and they are separate authorities:
+
+| surface | command | the seven tools | may it change anything? |
+|---|---|---|---|
+| **read** — asking | `python3 -m annot.mcp_server` | `gene_dossier` · `gene_xref` · `phenotype_evidence` · `publications_for` · `traits_containing` · `what_changed` · `answer` | **no** — read-only over the store; every item carries source, release, fetched_at and accession, and `answer` refuses a sentence it cannot bind to a record |
+| **machine** — operating | `python3 -m symbiont.mcpserver` | `source_health` · `source_probe` · `source_evaluate` · `source_draft` · `source_sandbox` · `source_card` · `source_admit` | yes, but only **admission** — it never fetches or stores rows |
+
+Ingestion is a third actor: the loop (`python3 -m symbiont.loop`) is the only thing that widens the corpus, and it cannot widen permissions. And the
+**manifest** is a third surface that needs no authority at all — an uploader inside another project, a bucket loader, or `sha256sum` reads the staged file
+plus `handover.json` without touching either door. The reading layer exposes evidence; it does not interpret it (see [`docs/DESIGN.md`](docs/DESIGN.md) §9).
+
 ## Start here — the quickstart
 
 First command. No install, no network, no key (Python 3.10+ and one YAML reader):
