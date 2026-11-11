@@ -262,3 +262,5 @@ count with the source's own. A thing that cannot produce a count can still be us
 | `harvester-view/` | the published view from the first ship run (77,144 rows) |
 | `LICENCE` · `SUPPORT.md` · `CHANGELOG.md` · `Makefile` · `pyproject.toml` | the licence (MIT for code; per-source data terms recorded) · the support boundary · the version history · the nine tests · the package |
 
+
+The station's ghosts are reconciled by `tools/ghost-instrument.py`.
