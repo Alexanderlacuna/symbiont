@@ -164,14 +164,19 @@ jobs:
             exit "$rc"
           fi
 
-      # ── BRANCH-ONLY DIAGNOSTIC (NOT part of the deliverable; removed before the final runs) ──
-      - name: DIAGNOSTIC — republish the failure as one annotation per line
+      # ── BRANCH-ONLY DIAGNOSTIC v3 (NOT part of the deliverable; removed before the final runs) ──
+      #    the 10-annotations-per-step cap ate everything after the head lines in v2, so the
+      #    DECISIVE lines go first: env, then every FAIL/Traceback line, then the tail.
+      - name: DIAGNOSTIC — the failure tail, decisive lines first
         if: failure()
         run: |
+          esc(){ printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g'; }
+          printf "::error title=ENV::%s\n" "$(esc "$(uname -r) bwrap=$(command -v bwrap || echo none) userns=$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo unset) py=$(python3 -V 2>&1) yaml=$(python3 -c 'import yaml;print(yaml.__version__)' 2>&1)")"
           if [ -f /tmp/make-check.out ]; then
-            head -20 /tmp/make-check.out | while IFS= read -r l; do printf "::error title=HEAD::%s\n" "$l"; done
-            grep -nE 'FAIL|Error|error|Traceback|REFUSED|not set|missing' /tmp/make-check.out | head -20 \
-              | while IFS= read -r l; do printf "::error title=LINE::%s\n" "$l"; done
-            tail -8 /tmp/make-check.out | while IFS= read -r l; do printf "::error title=TAIL::%s\n" "$l"; done
+            wc -l /tmp/make-check.out | while IFS= read -r l; do printf "::error title=SIZE::%s\n" "$(esc "$l")"; done
+            grep -nE 'FAIL|Traceback|Error|REFUSED|AssertionError|not set|missing|assert' /tmp/make-check.out | tail -5 \
+              | while IFS= read -r l; do printf "::error title=FAILLINE::%s\n" "$(esc "$l")"; done
+            tail -3 /tmp/make-check.out | while IFS= read -r l; do printf "::error title=TAIL::%s\n" "$(esc "$l")"; done
+          else
+            printf "::error title=SIZE::no /tmp/make-check.out — the (a) step died before tee\n"
           fi
-          python3 -c "import yaml,sys;print('::error title=ENV::yaml='+yaml.__version__+' py='+sys.version.split()[0])"
