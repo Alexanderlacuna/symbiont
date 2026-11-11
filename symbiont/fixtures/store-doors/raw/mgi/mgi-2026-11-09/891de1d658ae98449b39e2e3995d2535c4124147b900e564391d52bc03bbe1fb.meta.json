@@ -1,0 +1,13 @@
+{
+  "bytes": 8515,
+  "etag": "",
+  "fetched_at": "2026-11-10T13:13:28.049859+00:00",
+  "filename": "mrk_list1_gz.rpt.gz",
+  "last_modified": "Tue, 10 Nov 2026 13:13:27 GMT",
+  "release": "mgi-2026-11-09",
+  "reskey": "mrk_list1_gz",
+  "run_id": "doors-fixture-1",
+  "sha256": "891de1d658ae98449b39e2e3995d2535c4124147b900e564391d52bc03bbe1fb",
+  "source": "mgi",
+  "url": "http://127.0.0.1:37717/reports/MRK_List1.rpt.gz"
+}

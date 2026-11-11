@@ -1,0 +1,44 @@
+{
+  "columns": [
+    {
+      "name": "symbol",
+      "note": "MGI gene symbol, case preserved (join key)",
+      "type": "string"
+    },
+    {
+      "name": "mgi_id",
+      "note": "MGI accession, MGI:####### from the xref provider",
+      "type": "string"
+    },
+    {
+      "name": "ensembl_gene_id",
+      "note": "ENSMUSG############ from the id authority",
+      "type": "string"
+    },
+    {
+      "name": "chromosome",
+      "note": "as published by the id authority",
+      "type": "string"
+    },
+    {
+      "name": "start",
+      "note": "1-based inclusive, id authority",
+      "type": "integer"
+    },
+    {
+      "name": "end",
+      "note": "1-based inclusive, id authority",
+      "type": "integer"
+    }
+  ],
+  "description": "mouse gene identity and position: one row per gene symbol where an id authority and an xref provider agree. Unresolved and conflicting keys are NOT in this view; they are in xref/conflicts.tsv with a reason.",
+  "key": [
+    "symbol"
+  ],
+  "resolution": [
+    "one authority id + one provider id per symbol (xref.py R1)",
+    "on namespace disagreement the id authority's value is published (R2)"
+  ],
+  "version": 1,
+  "view": "mouse_gene"
+}

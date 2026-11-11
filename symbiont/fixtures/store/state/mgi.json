@@ -1,0 +1,34 @@
+{
+  "etags": {
+    "mrk_ensembl": "",
+    "mrk_list1_gz": ""
+  },
+  "licence": {
+    "name": "MGI data and annotations: CC-BY 4.0 (attribution required)",
+    "quote": "MGI data and annotations are licensed under a Creative Commons Attribution 4.",
+    "reused_from": "arc-1",
+    "terms_sha256": "20b901db07f273b4743e4be03f101deecce68b867df3b236347357da12a07048",
+    "url": "http://127.0.0.1:42997/reports/licence.html"
+  },
+  "published_count": null,
+  "release": "mgi-2026-11-09",
+  "release_at": "2026-11-10T11:55:29.170143+00:00",
+  "run_id": "arc-2",
+  "snapshots": {
+    "mrk_ensembl": {
+      "bytes": 594,
+      "path": "/tmp/symbiont-arc-c0auwtd6/store/raw/mgi/mgi-2026-11-09/9aa742cfc3029447b6e5746d77feb99ab6f5c1948eb65bfce57b2a64e4d46b32.rpt",
+      "release": "mgi-2026-11-09",
+      "sha256": "9aa742cfc3029447b6e5746d77feb99ab6f5c1948eb65bfce57b2a64e4d46b32",
+      "url": "http://127.0.0.1:42997/reports/MRK_ENSEMBL.rpt"
+    },
+    "mrk_list1_gz": {
+      "bytes": 264,
+      "path": "/tmp/symbiont-arc-c0auwtd6/store/raw/mgi/mgi-2026-11-09/405f73c0128841a694deb54bcd7797ef5935f0bb603ff95bb1fe3cddc3404633.rpt.gz",
+      "release": "mgi-2026-11-09",
+      "sha256": "405f73c0128841a694deb54bcd7797ef5935f0bb603ff95bb1fe3cddc3404633",
+      "url": "http://127.0.0.1:42997/reports/MRK_List1.rpt.gz"
+    }
+  },
+  "updated_at": "2026-11-10T11:55:29.272083+00:00"
+}

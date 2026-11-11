@@ -1,0 +1,8 @@
+{
+  "name": "farm-literature-mcp-server",
+  "private": true,
+  "description": "The literature arm's PINNED MCP server (@cyanheads/pubmed-mcp-server exactly 2.12.0, no caret). The adapter (harvester/literature/adapters/pubmed.py) WRAPS this server over stdio; the arm writes no E-utilities client of its own. Licence: Apache-2.0 (verified on disk at node_modules/@cyanheads/pubmed-mcp-server/LICENSE).",
+  "dependencies": {
+    "@cyanheads/pubmed-mcp-server": "2.12.0"
+  }
+}

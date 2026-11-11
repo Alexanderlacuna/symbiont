@@ -1,0 +1,70 @@
+# THE PHENOTYPES ARM'S FIXTURE ROSTER — offline (zero requests): the same two file formats the
+# real MGI sources publish (adapters/local_fixture.py reads them from disk), so this fixture
+# exercises the REAL parse, the REAL refusals and the REAL conflict rule.
+#
+#   source-a (provider A) and source-b (provider B) both publish a row for
+#   (Brca1 = MGI:105051, MP:0001541) with DIFFERENT evidence codes (EXP vs IAGP) — the
+#   disagreement: BOTH rows must be kept and ONE conflict counted (SCHEMA.md §0).
+#   Both also publish an IDENTICAL row for (MGI:105051, MP:0002098) — corroboration: both rows
+#   kept, NO conflict counted.
+#   source-b also carries the two refusals the row text names:
+#     · a row with NO ontology term id  -> refused BY NAME (gene MGI:105051), counted as a reject
+#     · a row with evidence code 'HEARSAY', outside the declared vocabulary -> refused by name
+#   source-a carries one row for a gene OUTSIDE the scope -> counted out_of_scope (never silently
+#   dropped: file_rows = rows_in + out_of_scope + malformed, SCHEMA.md §5).
+
+version: 1
+
+sources:
+  - id: fixture_terms
+    role: term_authority
+    adapter: local_vocab
+    enabled: true
+    note: "fixture term authority: the MP vocabulary file, local, 3 terms"
+    base_url: "fixture:local"
+    endpoints:
+      terms: terms.rpt
+    rate_limit:
+      requests_per_minute: 1000
+      min_interval_s: 0.0
+    licence_text: "fixture data, authored by this farm for its own selftest"
+    budget:
+      requests: 4
+      bytes: 1000000
+      wall_s: 60
+  - id: source-a
+    role: association_provider
+    adapter: local_assoc
+    enabled: true
+    note: "fixture provider A: EXP-coded rows for Brca1, plus one out-of-scope Actb row"
+    base_url: "fixture:local"
+    endpoints:
+      associations: source-a.rpt
+    rate_limit:
+      requests_per_minute: 1000
+      min_interval_s: 0.0
+    licence_text: "fixture data, authored by this farm for its own selftest"
+    evidence_codes: ["EXP", "IAGP"]
+    gene_scope: [Brca1]
+    budget:
+      requests: 4
+      bytes: 1000000
+      wall_s: 60
+  - id: source-b
+    role: association_provider
+    adapter: local_assoc
+    enabled: true
+    note: "fixture provider B: an IAGP-coded row disagreeing with A on (Brca1, MP:0001541); a corroborating identical row on MP:0002098; a row with NO ontology id (refused by name); a row with evidence outside the vocabulary (refused by name)"
+    base_url: "fixture:local"
+    endpoints:
+      associations: source-b.rpt
+    rate_limit:
+      requests_per_minute: 1000
+      min_interval_s: 0.0
+    licence_text: "fixture data, authored by this farm for its own selftest"
+    evidence_codes: ["EXP", "IAGP"]
+    gene_scope: [Brca1]
+    budget:
+      requests: 4
+      bytes: 1000000
+      wall_s: 60

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "symbiont"
+version = "0.1.0"
+description = "SYMBIONT — a provenance-first mining station: plugins fetch backed sources, a versioned store keeps every record with its source, release, hash and count, and the only write is a handover manifest."
+readme = "symbiont/README.md"
+requires-python = ">=3.10"
+# the pinned dependency list — the station is stdlib-first; PyYAML is the one third-party import
+# (symbiont/contract.py reads sources.yml). Pinned ==, never a range: a station whose behaviour
+# can drift with a dependency bump is a station whose proofs no longer name what ran.
+dependencies = ["PyYAML==6.0.3"]
+license = {file = "LICENCE"}
+authors = [{name = "the symbiont station crew"}]
+
+[project.scripts]
+symbiont = "symbiont.cli:main"
+
+[tool.setuptools]
+packages = ["symbiont", "symbiont.adapters", "symbiont.adapters_draft", "symbiont.literature", "annot"]
+
+[tool.setuptools.package-data]
+symbiont = ["sources.yml", "admission-gate.txt"]

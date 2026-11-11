@@ -1,0 +1,7 @@
+# generated + local artefacts — the station never commits its live store (OPS.md owns backups)
+__pycache__/
+*.pyc
+.venv/
+symbiont/store/
+symbiont/literature/mcp-server/node_modules/
+/tmp/

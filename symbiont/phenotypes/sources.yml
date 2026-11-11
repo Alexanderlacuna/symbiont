@@ -1,0 +1,74 @@
+# PHENOTYPES SOURCES — the ONE definition site for this arm (its own contract:
+# symbiont/phenotypes/contract.py::load_sources, separate from the gene arm's sources.yml,
+# because the gene arm's registry admits only id_authority/xref_provider roles).
+#
+# The roster is ROLES, not sources (SCHEMA.md §2):
+#   term_authority        exactly ONE — the ontology is the single authority for the phenotype
+#                         TERM: the record's phenotype_term is resolved ONLY from this file, and
+#                         a term id it does not know is refused by name.
+#   association_provider  one or more — each is the authority for the ASSOCIATION it published:
+#                         its row is stored as it published it, its own name on the record.
+#                         When two of them disagree on the same (gene_id, phenotype_term_id),
+#                         BOTH rows are kept and the conflict is COUNTED (conflicts.tsv) —
+#                         never averaged, never dropped (SCHEMA.md §0).
+#
+#   evidence_codes  the source's OWN evidence vocabulary, checked per row: a code outside it is
+#                   refused by name. MGI's flat GenePheno file publishes NO per-row evidence
+#                   token, so this source's declared vocabulary is exactly the one named value
+#                   'not-published-in-file' — the arm refuses to invent a code the source did
+#                   not publish. The evidence MGI does publish per row (the PubMed citation,
+#                   the genotype context) is carried in the record's `citation` and `statement`.
+#   gene_scope      the genes of this first slice. The arm is KEYED BY THE XREF TABLE: each
+#                   symbol must exist as an 'ok' row in the gene arm's store/xref/xref.tsv, and
+#                   a scope gene missing from it is refused by name before a request leaves
+#                   the box (the literature arm's rule, unchanged).
+#
+# Licence: MGI data and annotations are CC-BY 4.0 (the gene arm's sources.yml already declares
+# these terms); the licence page is read at run time and hashed — the arm refuses to ingest
+# under terms it could not read.
+
+version: 1
+
+sources:
+  - id: mp_ontology
+    role: term_authority
+    adapter: mgi_vocab
+    enabled: true
+    note: "term authority: the Mammalian Phenotype (MP) vocabulary as MGI publishes it (VOC_MammalianPhenotype.rpt: term id, term, definition). The ONLY authority for a phenotype TERM — no association source may supply a term's name."
+    base_url: https://www.informatics.jax.org/downloads/reports/
+    endpoints:
+      terms: VOC_MammalianPhenotype.rpt
+    rate_limit:
+      requests_per_minute: 20
+      min_interval_s: 3.0
+    licence_url: https://www.informatics.jax.org/mgihome/other/copyright.shtml
+    licence_text: "MGI data and annotations: CC-BY 4.0 (attribution required)"
+    licence_pattern: "MGI data and annotations are licensed under[^.]*\\."
+    budget:
+      requests: 6
+      bytes: 20000000
+      wall_s: 300
+    staleness:
+      policy_days: 120
+  - id: mgi_genepheno
+    role: association_provider
+    adapter: mgi_genepheno
+    enabled: true
+    note: "association provider: MGI's curated gene-to-phenotype annotations (MGI_GenePheno.rpt: allelic composition, allele ids, background, MP term id, PubMed id, marker id, genotype id). The authority for the association. MGI publishes no release id, so source_release is the file's own Last-Modified date, and no evidence-code token exists in the file, so evidence_code is the named value 'not-published-in-file' with the row's own citation and genotype context carried beside it."
+    base_url: https://www.informatics.jax.org/downloads/reports/
+    endpoints:
+      associations: MGI_GenePheno.rpt
+    rate_limit:
+      requests_per_minute: 20
+      min_interval_s: 3.0
+    licence_url: https://www.informatics.jax.org/mgihome/other/copyright.shtml
+    licence_text: "MGI data and annotations: CC-BY 4.0 (attribution required)"
+    licence_pattern: "MGI data and annotations are licensed under[^.]*\\."
+    evidence_codes: ["not-published-in-file"]
+    gene_scope: [Brca1, Pax6, Wt1]
+    budget:
+      requests: 6
+      bytes: 400000000
+      wall_s: 600
+    staleness:
+      policy_days: 120

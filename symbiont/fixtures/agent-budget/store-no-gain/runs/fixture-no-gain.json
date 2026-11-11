@@ -1,0 +1,85 @@
+{
+  "agent_tasks": [
+    {
+      "caps": {
+        "max_calls": 80,
+        "max_rounds": 20,
+        "max_wall_s": 1800,
+        "no_progress_rounds": 3
+      },
+      "exit": "refused",
+      "policy": {
+        "path": "/home/kabui/app-farm/reports/symbiont-policy.yml",
+        "sha256": "7f89f12b2ed7337f5b298e0a5bb1080e1f42ba1a2e7b8a547c2df18cdd286399"
+      },
+      "refused": {
+        "code": "no-progress",
+        "reason": "3 consecutive round(s) with no new accession and no new record (rounds 1-3)"
+      },
+      "rounds": [
+        {
+          "bytes": 100,
+          "calls": 2,
+          "new_accessions": 0,
+          "new_records": 0,
+          "note": "spends, gains nothing",
+          "round": 1,
+          "tokens": 0,
+          "wall_seconds": 0.0
+        },
+        {
+          "bytes": 100,
+          "calls": 2,
+          "new_accessions": 0,
+          "new_records": 0,
+          "note": "spends, gains nothing",
+          "round": 2,
+          "tokens": 0,
+          "wall_seconds": 0.0
+        },
+        {
+          "bytes": 100,
+          "calls": 2,
+          "new_accessions": 0,
+          "new_records": 0,
+          "note": "spends, gains nothing",
+          "round": 3,
+          "tokens": 0,
+          "wall_seconds": 0.0
+        }
+      ],
+      "task": "fixture:loop-no-gain",
+      "totals": {
+        "bytes": 300,
+        "calls": 6,
+        "new_accessions": 0,
+        "new_records": 0,
+        "rounds": 3,
+        "tokens": 0,
+        "wall_seconds": 0.0
+      }
+    }
+  ],
+  "cost": {
+    "bytes_in": 300,
+    "new_accessions": 0,
+    "new_records": 0,
+    "note": "the manifest's own cost shape (requests/bytes_in/wall_seconds), extended to agent tasks with tokens/rounds/new_accessions/new_records",
+    "requests": 6,
+    "rounds": 3,
+    "tokens": 0,
+    "wall_seconds": 0.0
+  },
+  "finished_at": "2026-11-10T12:00:43.106871+00:00",
+  "kind": "agent-task",
+  "question": "",
+  "refusals": [
+    {
+      "code": "no-progress",
+      "reason": "3 consecutive round(s) with no new accession and no new record (rounds 1-3)"
+    }
+  ],
+  "run_id": "fixture-no-gain",
+  "started_at": "2026-11-10T12:00:43.106641+00:00",
+  "task": "fixture:loop-no-gain"
+}

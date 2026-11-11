@@ -1,0 +1,30 @@
+{
+  "cost": {
+    "requests": 1
+  },
+  "findings": [],
+  "finished_at": "2026-11-10T03:15:00+00:00",
+  "publish": {},
+  "question": "admission policy fixture",
+  "refusals": [],
+  "replay": [],
+  "run_id": "cycle-1",
+  "since": "auto",
+  "skipped": {},
+  "sources": {
+    "fixture_trial": {
+      "id": "fixture_trial",
+      "verify": {
+        "detail": "fixture: ours vs the source's own count",
+        "ok": true,
+        "ours": 3,
+        "source_count": 3,
+        "url": "http://fixture.example/count"
+      }
+    }
+  },
+  "sources_path": "/fixture/sources.yml",
+  "started_at": "2026-11-10T03:15:00+00:00",
+  "status": "PUBLISHED",
+  "xref": {}
+}
