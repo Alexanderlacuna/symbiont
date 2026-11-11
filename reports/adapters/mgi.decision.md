@@ -54,10 +54,12 @@ Write the adapter against the documented API (bulk release files, no count endpo
 - MCP candidate berntpopp/mgi-link: ★1, NOASSERTION, archived=False, pushed 2026-11-02T03:22:44Z (8 days ago); README sha256 da9e243a72740481…
   - README keywords: DOI, bulk, count, download, release
 - Exa leg SKIPPED BY NAME: EXA_API_KEY is not set — the GitHub API and the source's own count endpoint carried the decision
-- survey evidence: reports/MCP-SURVEY-BIOINFORMATICS-REPORT.md — https://github.com/berntpopp/mgi-link
+- survey evidence: reports/MCP-SURVEY-BIOINFORMATICS-REPORT.md† — https://github.com/berntpopp/mgi-link
 
 ## Refusals and gaps
 
 - none: every permitted call answered
 
 <!-- decided by harvester.discover at 2026-11-10T21:20:07.995581+00:00 -->
+
+† withheld from this public tree; see docs/WITHHELD.md.

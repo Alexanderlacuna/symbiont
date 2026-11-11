@@ -1,5 +1,7 @@
 """THE TASK LEDGER + NO-PROGRESS DETECTOR + HARD CAPS for agent work
-(req-P1-AGENT-BUDGET-AND-NO-PROGRESS-DETECTOR; SCOUT-AI-MINING-STATIONS.md §10 CONTROL 2).
+(req-P1-AGENT-BUDGET-AND-NO-PROGRESS-DETECTOR; SCOUT-AI-MINING-STATIONS.md† §10 CONTROL 2).
+(† the scout report is held back from the public subset — a row in ../docs/WITHHELD.md: it carries the
+editorial view of other projects that set these budgets. The numbers themselves are stated below.)
 
 The two numbers every mature agent station publishes and this one did not: what an agent task
 SPENT (calls · tokens · bytes · wall-clock · rounds) and what it GAINED (new accessions, new

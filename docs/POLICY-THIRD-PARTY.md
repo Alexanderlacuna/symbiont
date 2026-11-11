@@ -5,7 +5,7 @@ depend on at least one paid service nowhere described in one place.
 
 ## 1 · CODE (a library, an MCP server, a script we did not write)
 ```
-READ THE LICENCE ON DISK, never from a README claim or a search result (precedent: reports/INCIDENT-2026-10-22-FALSE-LICENSE.md).
+READ THE LICENCE ON DISK, never from a README claim or a search result (precedent: reports/INCIDENT-2026-10-22-FALSE-LICENSE.md†).
 LICENCE MUST ALLOW OUR USE (a station handed to GeneNetwork, executed on their hardware): MIT · Apache-2.0 · BSD · ISC are fine;
 GPL/AGPL only if we never link it into the station; anything unclear = refused until read.
 PIN IT: exact version + a hash (the PubMed MCP is pinned 2.12.0 with its licence read on disk).
@@ -14,6 +14,9 @@ ONE DECISION RECORD before it is trusted: ADAPTER DECISION — what it is, its l
 SANDBOX FIRST: it runs in a throwaway store with a budget before it touches real data.
 A DEPENDENCY THAT CANNOT BE PINNED IS NOT A DEPENDENCY, IT IS A RISK.
 ```
+
+**†** held back from this public subset — that incident is a farm failure, not a station one. Every such path is a
+row in [`WITHHELD.md`](WITHHELD.md), with the reason and how to request it.
 
 ## 2 · DATA (records, files, dumps we store)
 ```

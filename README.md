@@ -1,8 +1,46 @@
 # SYMBIONT — the data-mining station
 
+> **This repository is a PUBLIC SUBSET.** Some of the paths it cites are held back, by policy.
+> Every one of them — what it is, why, what it would prove, how to request it — is in [`docs/WITHHELD.md`](docs/WITHHELD.md).
+
 A **data-mining station** for biological annotation and literature. It fetches from a source, verifies its row
 count against the source's own count, stores every row with its **source, release and hash**, and hands the
 corpus over as a staged dataset plus a self-describing manifest. Nothing states a number it cannot re-derive.
+
+## Start here — the quickstart
+
+First command. No install, no network, no key (Python 3.10+ and one YAML reader):
+
+```sh
+$ python3 -m symbiont.selftest_sources        # 25/25 — the plug-in contract and the refusals, offline
+```
+
+**What that 25/25 covers, and what it does not:** it is the four-call plug-in contract and the four refusal
+classes held **offline, against fixtures served from 127.0.0.1, at miniature scale** — contract-level evidence
+and nothing more, so it is *not* a full-scale data test (T4's drop-and-rebuild of the 77k-row store is proved
+only at miniature scale), T10's retrieval number is not built, and T8 (an agent answering from tool output) is
+declared expected-fail in `make check`'s own output.
+
+Then the five things you can do with it:
+
+| you want to… | run this | what you get |
+|---|---|---|
+| **mine** (no model needed) | `python3 -m symbiont.loop --sources mgi --since auto --store ./store` | rows + a run record; a second run fetches nothing |
+| **hand over** | `python3 -m symbiont.manifest --store ./store --entity gene --out manifest.json` | the staged file + the manifest (sha256, counts, rejects, licence) |
+| **ask** it questions (MCP) | `python3 -m annot.mcp_server` | 7 read tools with citations: dossier · xref · phenotype evidence · publications · traits · what changed · `answer` |
+| **grow / operate** it (MCP) | `python3 -m symbiont.mcpserver` | 7 machine tools: `source_health` · `probe` · `evaluate` · `draft` · `sandbox` · `card` · `admit` |
+| **serve** it over HTTP | `python3 -m annot.rest --port 8765` | one route per read tool, the same bytes as the CLI |
+
+An agent needs no more than a config block:
+
+```json
+{ "mcpServers": {
+    "symbiont-read":    { "command": "python3", "args": ["-m", "annot.mcp_server"] },
+    "symbiont-machine": { "command": "python3", "args": ["-m", "symbiont.mcpserver"] } } }
+```
+
+**What the station is worth** is under **What you get**, immediately below. **Setup** — Guix, plain `python3`,
+venv+pip — is the `## Setup` section after it, and the station's growth policy is under **Growing the corpus**.
 
 **What you get:**
 
@@ -14,7 +52,7 @@ corpus over as a staged dataset plus a self-describing manifest. Nothing states 
    asking can be exposed widely, admitting stays with an operator.
 3. **The corpus can grow itself — but only if you say so.** Sophie's discovery light finds new sources, evaluates their licence, drafts an
    adapter, proves its count in a sandbox and proposes admission; it ships OFF so no deployment inherits our appetite for growth, while her
-   watching light (health · staleness · gaps) ships ON. The details are in **Sophie** below.
+   watching light (health · staleness · gaps) ships ON. The details are in **Growing the corpus** below.
 
 It runs with **no model and no key**; models appear only in those optional parts, and a deployment supplies its own. No secrets are mounted
 into the sandbox, and an adapter may reach only the host it is for.
@@ -33,8 +71,8 @@ $ guix shell bubblewrap python python-pyyaml -- python3 -m symbiont.selftest_san
 
 ```sh
 $ git clone <this repo> && cd <repo>
-$ python3 -m symbiont.selftest_sources        # 25/25 — no install, no network
-$ python3 -m annot.selftest.sh 2>/dev/null || bash annot/selftest.sh    # 21/21 the read doors
+$ python3 -m symbiont.selftest_sources        # 25/25 — no install, no network (scope: the sentence above)
+$ bash annot/selftest.sh                     # 34/34 the read doors, offline, same contract-level scope
 ```
 
 **C · venv + pip (only if you want the `symbiont` console command)**
@@ -67,30 +105,12 @@ $ guix shell -D -f guix.scm -- python3 -m symbiont.selftest_sources    # 25/25
 $ guix pack -f guix.scm                        # a relocatable tarball, for a handover
 ```
 
-**One dependency decision, made once and repeated in three places** (`guix.scm`, `pyproject.toml`, `symbiont/README.md`): Guix's channel carries
-`python-pyyaml` **6.0.2**, so **6.0.2 is the version the station accepts** — the pip pin moved to `>=6.0` so no file disagrees. A cold first
+**One dependency decision, made once and repeated in every file that names it** (`guix.scm`, `pyproject.toml`, `symbiont/README.md`, `CHANGELOG.md`):
+**the requirement is one range, `PyYAML>=6.0,<7`** — the suites ran on 6.0.3, the Guix recipe builds 6.0.2, and the
+and propagates, so the two recipes cannot disagree. `make check` asserts it rather than leaving it to
+a reader: the dependency-version step greps every file in the tree and fails on a second version, on
+a range, and on a file that names the dependency with no version. A cold first
 `guix build` takes minutes; that is the cost of a pinned toolchain, not a fault.
-
-## Start here — four ways to run it
-
-| you want to… | run this | what you get |
-|---|---|---|
-| **mine** (no model needed) | `python3 -m symbiont.loop --sources mgi --since auto --store ./store` | rows + a run record; a second run fetches nothing |
-| **hand over** | `python3 -m symbiont.manifest --store ./store --entity gene --out manifest.json` | the staged file + the manifest (sha256, counts, rejects, licence) |
-| **ask** it questions (MCP) | `python3 -m annot.mcp_server` | 7 read tools with citations: dossier · xref · phenotype evidence · publications · traits · what changed · `answer` |
-| **grow / operate** it (MCP) | `python3 -m symbiont.mcpserver` | 7 machine tools: `source_health` · `probe` · `evaluate` · `draft` · `sandbox` · `card` · `admit` |
-| **serve** it over HTTP | `python3 -m annot.rest --port 8765` | one route per read tool, the same bytes as the CLI |
-
-An agent needs no more than a config block:
-
-```json
-{ "mcpServers": {
-    "symbiont-read":    { "command": "python3", "args": ["-m", "annot.mcp_server"] },
-    "symbiont-machine": { "command": "python3", "args": ["-m", "symbiont.mcpserver"] } } }
-```
-
-**Sophie** — the sentinel — watches the sources you have (ships **ON**, read-only) and can discover sources you do not (ships **OFF**).
-Her detail, her two lights, and the fact that admitting stays a separate gated act are under **Growing the corpus** below.
 
 ---
 
@@ -116,6 +136,8 @@ In an MCP client (Claude Desktop/Code, pi, or any stdio client):
     "symbiont-read":    { "command": "python3", "args": ["-m", "annot.mcp_server"] },
     "symbiont-machine": { "command": "python3", "args": ["-m", "symbiont.mcpserver"] } } }
 ```
+
+A clone answers out of the box: with no environment set the read doors answer from the committed fixture store `symbiont/fixtures/store-doors` (241 published rows, hashes and licence lines intact) until you mine your own store, and every response says which store answered in its `store:` line — `store: fixtures/store-doors — no live store found`, or `store: symbiont/store — the live store` once a harvested store is present.
 
 **Where the store comes from.** The store is chosen when the SERVER STARTS (environment or the server's own config), not per tool call.
 A call that passes a `store` argument gets a named error rather than a guess:
@@ -162,8 +184,10 @@ or a policy to admit. Three levels, honestly labelled:
 ```sh
 # level 2, today, from any MCP client: check a source, then evaluate a candidate
 $ python3 -m symbiont.mcpserver        # source_health · source_probe · source_evaluate · source_draft · source_sandbox · source_card · source_admit
-$ bash tools/discover-sweep.sh         # the sweep: listed queries, each logged with its count, dedupe across weeks, refusals by rule
+$ bash tools/discover-sweep.sh†        # the sweep: listed queries, each logged with its count, dedupe across weeks, refusals by rule
 ```
+
+† held back from this public subset: the sweep is a farm instrument, not station code — see [`docs/WITHHELD.md`](docs/WITHHELD.md).
 
 What the sweep looks at is **data**, not code: a surface registry of code hosts, package indexes, MCP hubs,
 papers, dataset registries, standards and prose — so a deployment points it at the corners of the world *it*
@@ -222,7 +246,8 @@ $ python3 -m symbiont.loop --sources <name> --since auto --store /tmp/try
 count with the source's own. A thing that cannot produce a count can still be used as a **tool** (search, lookup, an agent's helper) but it can
 **never be admitted as a source** — the station refuses it by name. A corpus you cannot count is a corpus you cannot defend.
 
-Per-source data terms live in `docs/SOURCE-TERMS.md` (the station's own code is MIT).
+**This repository is a public subset** — the engine, its tests, the fixtures and the design records. Files held back (and why) are listed in
+[`docs/WITHHELD.md`](docs/WITHHELD.md). A **†** on a cited path in this file means exactly that: held back, see that page.
 
 ## What is in this repository
 
@@ -233,7 +258,7 @@ Per-source data terms live in `docs/SOURCE-TERMS.md` (the station's own code is 
 | `symbiont/fixtures/store-doors/` | the committed fixture store the read doors' suite runs against in a clean clone: 241 published rows, raw content-addressed + run/state records + xref + view, hashes and licence lines kept — no install, no network |
 | `symbiont/docs/` | OPS.md (backup, restore, size) · OBS.md (heartbeat, the ONE command) · PLUGIN-AUTHORING.md (the contract, the pipeline, sandbox, card, gate) · POLICY-TEMPLATE.yml (numbers blank, fail-closed) |
 | `annot/` | the read doors over a store (six tools, one definition, four surfaces: CLI · MCP · REST · page) |
-| `reports/` | the research records this repository was built from — the design (DESIGN-STATION.md), the ship-run report, the MCP survey, decisions, policy (incl. the owner's live `reports/symbiont-policy.yml`) |
-| `harvester-view/` | the published view from the first ship run (77,144 rows) |
+| `reports/` | what this repository was built from and can publish: the decision records and the owner's live `reports/symbiont-policy.yml`. The rest of the record — the design (DESIGN-STATION.md†), the ship-run report†, the MCP survey†, the incidents — is held back, each one a row in [`docs/WITHHELD.md`](docs/WITHHELD.md) |
+| `harvester-view/` | the published view from the first ship run (77,144 rows — measured on the private store; the receipt is `runs/harvest-run-1.json`, store path redacted, available on request) |
 | `LICENCE` · `SUPPORT.md` · `CHANGELOG.md` · `Makefile` · `pyproject.toml` | the licence (MIT for code; per-source data terms recorded) · the support boundary · the version history · the nine tests · the package |
 

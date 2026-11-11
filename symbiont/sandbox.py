@@ -1,7 +1,9 @@
 """THE RESEARCH LAYER'S SANDBOX — two untrusted things, two allowlists, ENFORCED.
 
-This is layers 2 and 3 of reports/DESIGN-STATION.md §4c — the matrix that says, per layer, what
+This is layers 2 and 3 of reports/DESIGN-STATION.md† §4c — the matrix that says, per layer, what
 could go wrong, what the control is, and whether it is enforced or merely printed:
+(† the design record is held back from the public subset — a row in ../docs/WITHHELD.md. This file is
+self-contained on purpose: the matrix is below, so a clone can read the control without the record.)
 
   LAYER 2 · RESEARCH-LAYER ROLES (scout/analyst · triage · explore · exploit · adversary)
             a role reads the whole farm and writes ONE page. It may not write the store, the
@@ -22,6 +24,15 @@ DETECT WHERE IT CANNOT. So:
                     file. It is also NAMED and RECORDED: the child's refusal is parsed and, for
                     python children, an audit hook names the exact path; the run record carries a
                     finding of class `sandbox-breach` (a named class, never a silent repair).
+
+                    THE TIER LADDER (req-P1-ROUTINE-MCP-RUNS-STAY-CONFINED-AND-T): the same
+                    containment is built by THREE named tiers — `bubblewrap` (--ro-bind / / then
+                    --bind the allowlist), `guix` (guix shell --container --expose=/ then
+                    --share the allowlist) and `unshare` (a user+mount namespace, / remounted
+                    read-only, the allowlist re-bound read-write) — each PROBED before it is
+                    used, so `confine()` returns {tier, argv, tried} and run() records
+                    `tier=`. When NO tier can confine on a box the run is REFUSED BY NAME with
+                    every tier's reason; there is no fallback that runs the payload unconﬁned.
 
   NETWORK policy    PREVENTED by the kernel: the payload runs in a network namespace with one
                     nftables ruleset (`network_tier` on run(), tiers generated from
@@ -66,7 +77,7 @@ CLI (one definition per operation; the tests and an operator run the same words)
   python3 -m symbiont.sandbox policy --tier base-url --sources-config S --source ID
   python3 -m symbiont.sandbox dirhash <dir>
 
-Exit codes: 0 ok · 2 REFUSED before the work (unknown class, no bwrap, bad allowlist)
+Exit codes: 0 ok · 2 REFUSED before the work (unknown class, no confinement tier, bad allowlist)
             126 REFUSED[sandbox-breach] — the write or the connect was outside the allowlist
             otherwise the child's own exit code, untouched.
 """
@@ -220,29 +231,48 @@ def check_write(class_name: str, path: str, report: str | None = None, row_paths
                         f"({', '.join(allow)})")
 
 
-# ── kernel enforcement: the read-only root + the rw bind list ───────────────────────────────
+# ── kernel enforcement: the read-only root + the rw bind list, in THREE NAMED TIERS ────────
+# THE TIER LADDER (req-P1-ROUTINE-MCP-RUNS-STAY-CONFINED-AND-T, deliverable 3). Until today the
+# write confinement had exactly ONE implementation (bubblewrap) and its absence was a refusal —
+# which turned "a confined run is confined" into a fact about one package being installed on one
+# box. So the containment itself is a LADDER of named tiers that all deliver the SAME thing
+# (a read-only root, and ONLY the allowlist writable on top of it):
+#
+#   bubblewrap  --ro-bind / / , then --bind each allowlisted path        (the reference tier)
+#   guix        guix shell --container --expose=/ , --share each path    (guix's own container)
+#   unshare     a user+mount namespace, / remounted ro, paths re-bound rw
+#
+# Each tier is PROBED before it is used (a tier that cannot confine on THIS box is named in the
+# refusal, never assumed), the run record says which one confined it, and when no tier can the run
+# is REFUSED BY NAME. There is no fourth answer called "none" that runs the payload unconﬁned:
+# 'none' is what the refusal is FOR. Req-P1-ROUTINE-MCP-RUNS-STAY-CONFINED-AND-T NSC: "with bwrap
+# removed the run either uses the next tier or refuses by name, never 'unconfined' silently".
+CONFINE_TIERS = ("bubblewrap", "guix", "unshare")
+_TIER_CACHE: dict = {}
+
+
 def bwrap_path() -> str | None:
     return shutil.which("bwrap")
 
 
-def confined_argv(allow: list[str], argv: list[str], *, cwd: str | None = None,
-                  extra_env: dict | None = None, scratch_env: str = "/tmp",
-                  extra_binds: list[tuple[str, str]] | None = None) -> list[str]:
-    """The bubblewrap argv: ro-bind the whole tree, then bind ONLY the allowlist read-write.
+def _shq(text: str) -> str:
+    """One shell word, quoted — the unshare tier assembles a small script, and a path with a
+    space in it must not become two arguments."""
+    return "'" + str(text).replace("'", "'\\''") + "'"
+
+
+def _bwrap_argv(allow, argv, *, cwd=None, extra_env=None, scratch_env="/tmp",
+                extra_binds=None):
+    """TIER bubblewrap: ro-bind the whole tree, then bind ONLY the allowlist read-write.
 
     Order matters: `--ro-bind / /` first makes everything read-only; `--tmpfs /tmp` then gives a
     private writable /tmp; a bind AFTER that re-exposes an allowlisted path that lives under
     /tmp. `--die-with-parent` means a killed lane cannot leave an orphan writing anywhere."""
     bwrap = bwrap_path()
     if not bwrap:
-        raise SandboxRefused("bwrap (bubblewrap) is not installed — the sandbox cannot confine a "
-                             "lane without it, and it will not run one unconﬁned")
+        return None
     out = [bwrap, "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc",
            "--tmpfs", scratch_env, "--die-with-parent"]
-    for p in allow:
-        if not os.path.exists(p):
-            raise SandboxRefused(f"allowlisted path {p} does not exist — the sandbox binds only "
-                                 f"paths that are there (call _ensure_declared first)")
     # A BLANKET /tmp BIND RE-EXPOSES A TREE THAT LIVES UNDER /tmp (measured 2026-11-11): /tmp is
     # always on the allowlist, so a clone checked out at /tmp/x had every one of its files
     # writable again — the read-only root was undone by the scratch bind (selftest_sandbox F1a
@@ -266,6 +296,128 @@ def confined_argv(allow: list[str], argv: list[str], *, cwd: str | None = None,
     out += ["--chdir", cwd or os.getcwd()]
     out += ["--"] + argv
     return out
+
+
+def _guix_argv(allow, argv, *, cwd=None, extra_env=None, scratch_env="/tmp", extra_binds=None):
+    """TIER guix: `guix shell --container`, the same containment by guix's own container —
+    the whole tree is EXPOSED read-only (`--expose=/`) and only the allowlist is SHARED
+    read-write (`--share=PATH`). Same order rule as bubblewrap: nothing is writable that the
+    allowlist does not name. This tier is PROBED like any other; on the box this lane ran on it
+    refuses (`mkdir: Read-only file system: /tmp/guix-directory…/real-root`, quoted in the lane's
+    report), so the ladder fell through to `unshare` — which is exactly what the ladder is for."""
+    guix = shutil.which("guix")
+    if not guix:
+        return None
+    out = [guix, "shell", "--container", "--pure", "--expose=/"]
+    for p in allow:
+        out += [f"--share={p}"]
+    for src, dst in (extra_binds or []):
+        out += [f"--share={src}={dst}"]
+    script = [f"export {k}={_shq(v)}" for k, v in (extra_env or {}).items()]
+    script += [f"cd {_shq(cwd or os.getcwd())}", 'exec "$@"']
+    out += ["--", "bash", "-c", "\n".join(script), "symbiont-confine"] + list(argv)
+    return out
+
+
+def _unshare_argv(allow, argv, *, cwd=None, extra_env=None, scratch_env="/tmp",
+                  extra_binds=None):
+    """TIER unshare: a user+mount namespace, `/` remounted READ-ONLY, then each allowlisted path
+    re-bound read-write on top of it. Measured on this box (2026-11-11): inside the namespace
+    `touch /root/x` -> "Permission denied", `touch /tmp/x` -> "Read-only file system" until /tmp
+    is re-bound, and `mount --bind P P; mount -o remount,bind,rw P` writes again — the same
+    containment the bubblewrap argv gives, with no package beyond util-linux."""
+    unshare = shutil.which("unshare")
+    if not unshare:
+        return None
+    script = ["set -u", "mount --make-rprivate /",
+              "mount -o remount,bind,ro / 2>/dev/null || mount --bind -o ro / /"]
+    for p in allow:
+        script += [f"mount --bind {_shq(p)} {_shq(p)}",
+                   f"mount -o remount,bind,rw {_shq(p)}"]
+    for src, dst in (extra_binds or []):
+        script += [f"mount --bind {_shq(src)} {_shq(dst)}"]
+    for k, v in (extra_env or {}).items():
+        script += [f"export {k}={_shq(v)}"]
+    script += [f"cd {_shq(cwd or os.getcwd())}", 'exec "$@"']
+    return [unshare, "--user", "--map-root-user", "--mount", "--fork", "--",
+            "bash", "-c", "\n".join(script), "symbiont-confine"] + list(argv)
+
+
+_TIER_BUILDERS = {"bubblewrap": _bwrap_argv, "guix": _guix_argv, "unshare": _unshare_argv}
+
+
+def _tier_probe(tier: str, allow: list[str]) -> tuple[bool, str]:
+    """Does this tier actually confine a payload ON THIS BOX? Probed (once per process) by
+    running `/bin/true` through the very argv the run will use, so 'installed' and 'works' are
+    not the same claim: guix is installed here and still cannot build a container. The answer is
+    (ok, why-not) and the why-not is quoted in the refusal."""
+    if tier in _TIER_CACHE:
+        return _TIER_CACHE[tier]
+    built = _TIER_BUILDERS[tier](allow, ["/bin/true"], cwd=os.getcwd())
+    if built is None:
+        res = (False, "not installed")
+    else:
+        try:
+            p = subprocess.run(built, capture_output=True, text=True, timeout=120)
+            last = ((p.stderr or p.stdout or "").strip().splitlines() or [""])[-1][:160]
+            res = (p.returncode == 0,
+                   "" if p.returncode == 0 else f"its probe exited {p.returncode}: {last}")
+        except (OSError, subprocess.SubprocessError) as e:
+            res = (False, f"its probe failed ({type(e).__name__}: {str(e)[:120]})")
+    _TIER_CACHE[tier] = res
+    return res
+
+
+def confine(allow: list[str], argv: list[str], *, cwd: str | None = None,
+            extra_env: dict | None = None, scratch_env: str = "/tmp",
+            extra_binds: list[tuple[str, str]] | None = None,
+            tiers=None) -> dict:
+    """Confine `argv` with the FIRST tier that can on this box -> {tier, argv, tried}.
+
+    `tiers` pins the ladder (a caller that already resolved a tier passes [tier] so the payload
+    and its env cannot disagree about which tier is running). `SYMBIONT_CONFINE_SKIP` names tiers
+    to treat as unavailable — the diagnostic knob that proves the fall-through ("bwrap removed")
+    without uninstalling a package and proves the refusal when all three are skipped.
+
+    Raises SandboxRefused naming EVERY tier and why it could not: a refusal that does not say
+    what was tried sends the operator to the wrong package."""
+    for p in allow:
+        if not os.path.exists(p):
+            raise SandboxRefused(f"allowlisted path {p} does not exist — the sandbox binds only "
+                                 f"paths that are there (call _ensure_declared first)")
+    skipped = {t.strip() for t in (os.environ.get("SYMBIONT_CONFINE_SKIP") or "").split(",") if t.strip()}
+    tried: dict = {}
+    for tier in (tiers or CONFINE_TIERS):
+        if tier not in _TIER_BUILDERS:
+            tried[tier] = f"unknown tier (tiers: {', '.join(CONFINE_TIERS)})"
+            continue
+        if tier in skipped:
+            tried[tier] = ("skipped: SYMBIONT_CONFINE_SKIP names it unavailable on this box")
+            continue
+        ok, why = _tier_probe(tier, allow)
+        if not ok:
+            tried[tier] = why
+            continue
+        built = _TIER_BUILDERS[tier](allow, argv, cwd=cwd, extra_env=extra_env,
+                                     scratch_env=scratch_env, extra_binds=extra_binds)
+        if built is None:
+            tried[tier] = "not installed"
+            continue
+        return dict(tier=tier, argv=built, tried=tried)
+    raise SandboxRefused("no confinement tier can confine this run ("
+                         + "; ".join(f"{t}: {w}" for t, w in tried.items())
+                         + ") — refusing to run it unconﬁned")
+
+
+def confined_argv(allow: list[str], argv: list[str], *, cwd: str | None = None,
+                  extra_env: dict | None = None, scratch_env: str = "/tmp",
+                  extra_binds: list[tuple[str, str]] | None = None,
+                  tiers=None) -> list[str]:
+    """The argv of the first confinement tier that works here (see `confine`). Kept as a
+    function because it is the ONE name a caller uses to say "confine this", whichever tier
+    answers."""
+    return confine(allow, argv, cwd=cwd, extra_env=extra_env, scratch_env=scratch_env,
+                   extra_binds=extra_binds, tiers=tiers)["argv"]
 
 
 # ── network allowlist (refused AT CONNECT, naming the host) ─────────────────────────────────
@@ -859,9 +1011,11 @@ def run(argv: list[str], *, class_name: str, report: str | None = None, row_path
         network_guard_armed: bool = True) -> dict:
     """Run `argv` inside the write allowlist of `class_name`. Returns the run record.
 
-    Refuses before the work if the class is unknown or bwrap is unavailable (never runs a lane
-    unconﬁned and calls it sandboxed). A detected write refusal returns exit 126 with a
-    `sandbox-breach` finding naming the path — the file is not there, because the kernel said no.
+    Refuses before the work if the class is unknown or NO confinement tier can confine a run on
+    this box (never runs a lane unconﬁned and calls it sandboxed) — the tier that answered is in
+    `record['tier']` (bubblewrap · guix · unshare). A detected write refusal returns exit 126
+    with a `sandbox-breach` finding naming the path — the file is not there, because the kernel
+    said no.
 
     `network` is a POLICY TIER (netpolicy() / policy_for_entry() / policy_for_source()). When it
     is given the payload runs inside a network namespace with that nftables ruleset, and a
@@ -872,12 +1026,22 @@ def run(argv: list[str], *, class_name: str, report: str | None = None, row_path
     allow = allowlist(class_name, report, row_paths)
     for p in allow:                       # a declared path must exist before it can be bound
         _ensure_declared(p)
+    # WHICH TIER CONFINDS THIS RUN, and what the ladder had to reject to get there — resolved
+    # once, before any work, so "no tier can confine this box" is a refusal BEFORE the payload and
+    # the child's env (SYMBIONT_SANDBOX_TIER) cannot disagree with the argv it runs under.
+    plan = confine(allow, ["/bin/true"])
+    tier = plan["tier"]
     meta = tempfile.mkdtemp(prefix="symbiont-sandbox-meta-")
     breach_log = os.path.join(meta, "breach.jsonl")
     guard_dir = os.path.join(meta, "guard")
     os.makedirs(guard_dir, exist_ok=True)
     with open(os.path.join(guard_dir, "sitecustomize.py"), "w", encoding="utf-8") as fh:
         fh.write(SITECUSTOMIZE)
+    # expose the meta dir (breach log) inside the namespace, read-write, at /tmp/sbx-meta. It is
+    # passed as a BIND, not spliced into the argv: each tier spells a bind its own way (bwrap
+    # --bind, unshare mount --bind, guix --share), and splicing bwrap flags into another tier's
+    # argv was a bug waiting for the second tier to exist.
+    extra_binds = [(meta, "/tmp/sbx-meta")]
     child_env = dict(env if env is not None else os.environ)
     child_env.update(
         PYTHONPATH=os.pathsep.join([FARM, guard_dir] + [p for p in
@@ -891,12 +1055,14 @@ def run(argv: list[str], *, class_name: str, report: str | None = None, row_path
         "SYMBIONT_SANDBOX_BREACH_LOG": child_env["SYMBIONT_SANDBOX_BREACH_LOG"],
         "SYMBIONT_SANDBOX_CLASS": class_name,
         "PYTHONPATH": child_env["PYTHONPATH"],
+        # WHICH TIER CONFINED THIS CHILD, handed to the child itself: a run record written BY
+        # THE PAYLOAD can then state its own confinement instead of an outer process guessing it.
+        "SYMBIONT_SANDBOX_TIER": tier,
     }
     pass_env.update({k: str(v) for k, v in (extra_env or {}).items()})
-    argv_full = confined_argv(allow, argv, cwd=cwd, extra_env=pass_env)
-    # expose the meta dir (breach log) inside the namespace, read-write, at /sbx-meta
-    argv_full = argv_full[:argv_full.index("--")] + ["--bind", meta, "/tmp/sbx-meta"] + \
-        argv_full[argv_full.index("--"):]
+    conf = confine(allow, argv, cwd=cwd, extra_env=pass_env, extra_binds=extra_binds,
+                   tiers=[tier])
+    argv_full = conf["argv"]
     # ── THE NETWORK TIER: the kernel wrapper goes OUTSIDE the write confinement, so one process
     # tree carries both controls (a net namespace holds CAP_NET_ADMIN inside itself, and bwrap
     # keeps it — measured). The counter file lives in the PARENT's /tmp: same mount namespace,
@@ -911,9 +1077,8 @@ def run(argv: list[str], *, class_name: str, report: str | None = None, row_path
             "SYMBIONT_NETPOL_DENY_PRIVATE": "1" if network.get("tier") == "deny-private"
                                             else "0",
         })
-        argv_full = confined_argv(allow, argv, cwd=cwd, extra_env=pass_env)
-        argv_full = argv_full[:argv_full.index("--")] + ["--bind", meta, "/tmp/sbx-meta"] + \
-            argv_full[argv_full.index("--"):]
+        argv_full = confine(allow, argv, cwd=cwd, extra_env=pass_env, extra_binds=extra_binds,
+                            tiers=[tier])["argv"]
         counters_path = os.path.join(meta, "netpol.counters")
         parent_env.update(SYMBIONT_NETPOL=network.get("ruleset", ""),
                           SYMBIONT_NETPOL_COUNTERS=counters_path)
@@ -966,7 +1131,7 @@ def run(argv: list[str], *, class_name: str, report: str | None = None, row_path
                argv=argv, cwd=cwd or os.getcwd(), allowlist=allow, wall_s=wall,
                exit=proc.returncode, stderr_tail=proc.stderr.strip().splitlines()[-3:],
                findings=findings, breach=bool(findings), confinement=bwrap_path(),
-               network=net)
+               tier=tier, tier_tried=plan.get("tried") or {}, network=net)
     if capture_stdout:
         rec["stdout"] = proc.stdout
         rec["stderr"] = proc.stderr

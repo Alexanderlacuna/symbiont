@@ -11,7 +11,9 @@ requires-python = ">=3.10"
 # the pinned dependency list — the station is stdlib-first; PyYAML is the one third-party import
 # (symbiont/contract.py reads sources.yml). Pinned ==, never a range: a station whose behaviour
 # can drift with a dependency bump is a station whose proofs no longer name what ran.
-dependencies = ["PyYAML==6.0.3"]
+# ONE SPEC: the code is tested on PyYAML 6.0.3; Guix's channel provides 6.0.2 — so the requirement is a range, and the two versions are
+# named here and in symbiont/README.md only (make check asserts no other version string exists in the tree).
+dependencies = ["PyYAML>=6.0,<7"]
 license = {file = "LICENCE"}
 authors = [{name = "the symbiont station crew"}]
 

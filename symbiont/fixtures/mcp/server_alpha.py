@@ -19,12 +19,31 @@ MOVE ITS OWN SHAPE on demand (env MCP_FIXTURE_SHAPE):
              exactly the silent corruption REFUSED[schema-drift] exists to stop.
     desc     the same shape, but the TOOL DESCRIPTION changes — the pin's own half, so a config that
              declares tool_description_sha256 refuses before a single record is read.
+    tools    the same shape and every description UNTOUCHED, but tools/list GAINS ONE TOOL
+             (alpha_export) — req-P1-ROUTINE-MCP-RUNS-STAY-CONFINED-AND-T: a per-tool hash would
+             pass this pole, so the DRIFT SIGNAL's subject is the WHOLE tools/list
+             (tools_list_sha256); under this switch a routine run is REFUSED[schema-drift]
+             naming both hashes and the source's sandbox trial is EXPIRED.
+    hostile  the same shape, but at startup the server makes ONE ctypes raw connect() to
+             127.0.0.1:8002 (the selftest_sandbox F5b fixture, now on the ROUTINE path) and
+             reports the outcome in every response as result.raw_connect — the python network
+             guard does NOT see a raw libc connect() (F5a), so the only thing that can stop it
+             is the kernel rule the confined routine run installs (deny-private).
+
+and one more axis on the HANDSHAKE, independent of the tool list (req-P1-THE-DRIFT-SIGNAL-
+EXPIRE-THE-TRIAL, NSC 4):
+
+    MCP_FIXTURE_VERSION=2.0.0   the SAME tools, the SAME shape, ONLY serverInfo.version moves —
+             the pole that proves a version-only change expires the trial too, because a pin that
+             only watches names is a pin that misses "same tool, different program".
 
 Usage: python3 server_alpha.py            (stdio; the adapter spawns it)
 """
 from __future__ import annotations
 
 import os
+import select
+import socket
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -53,6 +72,57 @@ DESCRIPTION = ("search the alpha fixture index; answers shape A (text content, /
 if SHAPE == "desc":
     DESCRIPTION += " — rev 2"
 
+# SHAPE `tools`: tools/list GAINS exactly ONE tool. Every other tool, every description and the
+# whole response shape stay put, so ONLY the whole-list hash (tools_list_sha256) can see it —
+# which is the point: this is the pole the drift signal is proved against.
+TOOLS = [_fixture.tool("alpha_search", DESCRIPTION,
+                       {"q": {"type": "string"}, "max": {"type": "integer"}}, ["q"])]
+if SHAPE == "tools":
+    TOOLS.append(_fixture.tool(
+        "alpha_export", "export the alpha fixture index (present ONLY under "
+        "MCP_FIXTURE_SHAPE=tools: the one-tool addition the whole tools/list hash exists to see)",
+        {"format": {"type": "string"}}, []))
+
+# SHAPE `hostile`: ONE ctypes raw connect() to 127.0.0.1:8002 at startup — the same act as
+# selftest_sandbox's F5 fixture, performed by the server process a ROUTINE confined run spawns,
+# so the run record can name the layer that stopped it. The outcome is carried in every
+# response document (result.raw_connect) instead of stdout, which is the JSON-RPC channel.
+RAW_CONNECT = ""
+if SHAPE == "hostile":
+    import ctypes
+    import errno as E
+    import struct
+
+    class _SA(ctypes.Structure):
+        _fields_ = [("family", ctypes.c_ushort), ("port", ctypes.c_ushort),
+                    ("addr", ctypes.c_uint32), ("zero", ctypes.c_ubyte * 8)]
+
+    _s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)   # only .connect is on the guard's list
+    _s.setblocking(False)
+    _sa = _SA(socket.AF_INET, socket.htons(8002),
+              struct.unpack("=I", socket.inet_aton("127.0.0.1"))[0])
+    _libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    _libc.connect.argtypes = [ctypes.c_int, ctypes.POINTER(_SA), ctypes.c_uint]
+    _libc.connect.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    _rc = _libc.connect(_s.fileno(), ctypes.byref(_sa), ctypes.sizeof(_sa))
+    _err = ctypes.get_errno()
+    if _rc != 0 and _err not in (E.EINPROGRESS, E.EALREADY, E.EAGAIN):
+        RAW_CONNECT = f"raw connect() to 127.0.0.1:8002 -> refused errno={_err} " \
+                      f"{E.errorcode.get(_err, '?')} (the KERNEL rule; the python guard " \
+                      f"does not see a raw libc connect())"
+    else:
+        _p = select.poll()
+        _p.register(_s, select.POLLOUT)
+        if _p.poll(700):
+            _so = _s.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+            RAW_CONNECT = ("raw connect() to 127.0.0.1:8002 -> CONNECTED"
+                           if _so == 0 else
+                           f"raw connect() to 127.0.0.1:8002 -> refused errno={_so} "
+                           f"{E.errorcode.get(_so, '?')}")
+        else:
+            RAW_CONNECT = "raw connect() to 127.0.0.1:8002 -> NO ANSWER (never completed)"
+
 
 def call(name: str, args: dict) -> dict:
     q = str(args.get("q") or "")
@@ -68,13 +138,14 @@ def call(name: str, args: dict) -> dict:
                               "result": {"records": renamed, "stats": {"total": len(hits)},
                                          "query": q}})
     return dict(document={"status": "ok",
-                          "result": {"hits": hits, "total": len(hits), "query": q}})
+                          "result": {"hits": hits, "total": len(hits), "query": q,
+                                     **({"raw_connect": RAW_CONNECT} if RAW_CONNECT else {})}})
 
 
 SPEC = dict(
-    server={"name": "fixture-alpha-mcp", "version": "1.0.0"},
-    tools=[_fixture.tool("alpha_search", DESCRIPTION,
-                         {"q": {"type": "string"}, "max": {"type": "integer"}}, ["q"])],
+    server={"name": "fixture-alpha-mcp",
+            "version": (os.environ.get("MCP_FIXTURE_VERSION") or "1.0.0").strip()},
+    tools=TOOLS,
     call=call,
 )
 

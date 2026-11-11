@@ -80,6 +80,44 @@ def say(line: str) -> None:
     print(line, flush=True)
 
 
+def _raw_meta_index(store: str) -> dict:
+    """{sha256: fetched_at} for every raw snapshot meta on disk — the receipt's ONE clock reading.
+
+    `raw/<source>/<release>/<sha256>.meta.json` is written by the fetch that landed the bytes and
+    records `fetched_at`. The published view's provenance sidecar names a `fetched_at` per source by
+    CONTENT ADDRESS (never by the path the snapshot records), because a recorded path points at
+    where the store lived at fetch time (`harvester/store/…` before the station was renamed) and a
+    receipt that only names a stale path names nothing.
+    """
+    idx: dict[str, str] = {}
+    for dirpath, _dirs, files in os.walk(os.path.join(store, "raw")):
+        for n in files:
+            if not n.endswith(".meta.json"):
+                continue
+            try:
+                with open(os.path.join(dirpath, n), encoding="utf-8") as fh:
+                    m = json.load(fh)
+            except Exception:
+                continue
+            sha = m.get("sha256") or n[:-len(".meta.json")]
+            fa = m.get("fetched_at") or ""
+            if sha and fa and fa > idx.get(sha, ""):
+                idx[sha] = fa
+    return idx
+
+
+def _source_fetched_at(meta_index: dict, snaps: dict) -> str:
+    """When this source's release was fetched: the newest `fetched_at` among its snapshots' metas.
+
+    Returns "" when no meta on disk carries the content address — a value that SAYS it is unknown
+    rather than inventing a reading. This is the same instant the read doors report as an item's
+    `fetched_at`, taken from the same raw meta, so the dataset and its receipt cannot disagree.
+    """
+    hits = [meta_index.get(s.get("sha256") or "", "") for s in (snaps or {}).values()]
+    hits = [h for h in hits if h]
+    return max(hits) if hits else ""
+
+
 def digest_line(store: str, sid: str, line: str) -> str:
     """T9 — append one line to the source's digest (store/digest/<sid>.md) and return its path.
 
@@ -776,6 +814,7 @@ def _rebuild_from_raw(a) -> int:
                else "recorded (first materialisation — no prior copy to compare)"))
         say(f"PUBLISH  schema_sha256={ssha}"
             + (f"  MATCH recorded {recorded['schema']}" if recorded.get("schema") else ""))
+        meta_index = _raw_meta_index(store)
         jdump(dict(view=view_mod.VIEW, version=view_mod.VERSION, rows=len(x.rows), view_sha256=vsha,
                    schema_sha256=ssha, run_id=run_id,
                    generated_at=dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -786,6 +825,10 @@ def _rebuild_from_raw(a) -> int:
                                     url=[v.get("url", "") for v in
                                          record["sources"][k]["snapshots"].values()],
                                     licence=record["sources"][k].get("licence"),
+                                    # the receipt carries WHEN the release was fetched, read from
+                                    # the raw meta the fetch wrote — never a clock reading here
+                                    fetched_at=_source_fetched_at(
+                                        meta_index, record["sources"][k]["snapshots"]),
                                     stale=None)   # staleness needs the upstream endpoint: a
                                                   # rebuild never fetches, so it records no guess
                     for k in sorted(record["sources"]) if record["sources"][k].get("rebuilt")}),
@@ -1029,6 +1072,7 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
     vsha, ssha = sha256(vb), view_mod.schema_sha256()
     with open(os.path.join(vdir, f"{view_mod.VIEW}.v{view_mod.VERSION}.schema.json"), "wb") as fh:
         fh.write(view_mod.schema_bytes())
+    meta_index = _raw_meta_index(store)
     jdump(dict(view=view_mod.VIEW, version=view_mod.VERSION, rows=len(x.rows), view_sha256=vsha,
                schema_sha256=ssha, run_id=run_id,
                generated_at=dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -1038,6 +1082,8 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
                                 published_count=r_["discover"]["published_count"],
                                 url=[q["url"] for q in r_["discover"]["resources"]],
                                 licence=r_["discover"]["licence"],
+                                # the receipt carries WHEN the release was fetched (raw meta)
+                                fetched_at=_source_fetched_at(meta_index, r_.get("snapshots", {})),
                                 stale=r_.get("stale"))
                         for k, r_ in record["sources"].items() if "discover" in r_}),
           os.path.join(vdir, f"{view_mod.VIEW}.v{view_mod.VERSION}.provenance.json"))

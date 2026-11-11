@@ -1,0 +1,211 @@
+name: check
+# THE GATE RUNS ON PUSH, NOT ON HONOUR (req-P2-THE-GATE-RUNS-ON-PUSH-NOT-ON-HONOUR).
+#
+# WHY THIS FILE EXISTS. The tree's invariants used to live in prose: a README sentence, a Makefile
+# comment, a footnote on a held-back path. Prose is verified by whoever remembers to read it.
+# MEASURED 2026-11-11: this repository had no .github/, no workflow, no pre-commit hook and no hash
+# check; the Makefile documented T1–T9 and printed that T8 is expected-fail, and NOTHING ran on a
+# push. An invariant with no machine behind it is the same class of defect as an unpinned dependency.
+# RECEIPT for that sentence: this repository's own history — `git log --diff-filter=A --
+# .github/workflows/check.yml` names exactly one commit (the one that adds this file) and no path
+# under .github/ exists before it, so the absence was and stays checkable by any reader.
+#
+# ONE STEP PER INVARIANT, AND EVERY STEP STATES THE STATE IT EXPECTS, so a red run is a FINDING that
+# names the invariant it broke and the path that broke it — never noise, never a retry. A red step
+# prints its offenders; a green step prints what it counted, so a run that skipped a check is visible
+# as a step that never reported.
+#
+# OUT OF SCOPE BY DESIGN: no CI service beyond this file, no secret, no deploy step. Every step below
+# is the tree's own check, run on a clean runner, exactly as a reader can run it locally.
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+
+      # ── 0b · THE CONFINEMENT TIER THE SANDBOX SUITE REQUIRES ────────────────────────────
+      # EXPECTED: a confinement tier present for the tree's own sandbox suite, which is
+      # fail-closed BY DESIGN — it refuses to run unconfined and says so
+      # (SandboxRefused: "no confinement tier can confine this run"). EXPECTED, NOT MEASURED: a probe
+      # in a container configured like ubuntu-latest on 2026-11-11 found none of the three tiers it
+      # probes available (bubblewrap: not installed; guix: not installed; unshare:
+      # /proc/self/uid_map: Operation not permitted — Ubuntu 26 runners restrict unprivileged user
+      # namespaces). That probe's receipt is NOT in this tree: the receipt is the first Actions run
+      # log of this workflow, step 'the confinement tier', and until such a run exists this line is an
+      # expectation a reader can check by pushing, not a number the docs may lean on. Bubblewrap is the
+      # tier the suite names first, so that is the one installed here. No service, no secret, no deploy
+      # step — one package, because the suite cannot be green without a tier to enforce.
+      - name: the confinement tier — bubblewrap for the sandbox suite
+        run: |
+          set -euo pipefail
+          if command -v bwrap >/dev/null 2>&1; then
+            echo "bubblewrap already on the runner: $(bwrap --version)"
+          else
+            sudo apt-get update -q >/dev/null
+            sudo apt-get install -y -q bubblewrap >/dev/null
+            echo "installed bubblewrap on the runner: $(bwrap --version)"
+          fi
+
+      # ── 0 · THE TREE'S OWN PIN ────────────────────────────────────────────────────────────────
+      # EXPECTED: pyproject.toml states the one third-party dependency with ONE exact version, and
+      # that exact version installs. A versionless or ranged spec is not a spec — this step refuses
+      # by name instead of letting pip resolve something the proofs never ran against.
+      - name: the one dependency — install the exact pin pyproject.toml states
+        run: |
+          set -euo pipefail
+          pin=$(grep -oE 'PyYAML==[0-9]+(\.[0-9]+)+' pyproject.toml | head -1 || true)
+          if [ -z "$pin" ]; then
+            echo "EXPECTED one exact 'PyYAML==<version>' in pyproject.toml; found none."
+            echo "  what pyproject.toml says: $(grep -n 'PyYAML' pyproject.toml | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "installing the tree's own pin: $pin"
+          # the runner is setup-python's (python3 -m pip); a box that only has the pip shim still works
+          if python3 -m pip --version >/dev/null 2>&1; then python3 -m pip install --quiet "$pin"
+          else pip install --quiet "$pin"; fi
+
+      # ── (a) make check, WITH ITS EXPECTED-FAIL LIST INTACT ───────────────────────────────────
+      # EXPECTED: exit 0, and its own output names exactly one expected failure — T8 AGENT, not
+      # built yet (design §9). Every other test it runs must PASS or make fails; the hygiene and
+      # one-version assertions inside it run first.
+      - name: (a) make check — the T1–T9 contract, T8 declared expected-fail
+        run: |
+          set -euo pipefail
+          make check 2>&1 | tee /tmp/make-check.out
+          if ! grep -q 'T8 AGENT — EXPECTED FAIL' /tmp/make-check.out; then
+            echo "EXPECTED make check to print its own 'T8 AGENT — EXPECTED FAIL' line; it printed none."
+            echo "  DRIFT: either T8 was built (then drop the declaration here and in the Makefile)"
+            echo "         or the declaration was lost (then restore it). Either way this is a finding."
+            exit 1
+          fi
+
+      # ── THE DECLARED EXPECTED-FAILURES ARE THE ONES make check PRINTS ────────────────────────
+      # EXPECTED: the set declared in THIS file is the set make check printed in the step above. A
+      # workflow that declares one list while make check prints another is the honour system again,
+      # and a green run would hide it.
+      - name: the expected-failures declared here are the ones make check prints
+        run: |
+          set -euo pipefail
+          declared=$(printf '%s\n' 'T8 AGENT' | sort -u)
+          printed=$(grep -oE '^T[0-9]+ [A-Z][A-Z0-9-]* — EXPECTED FAIL' /tmp/make-check.out \
+                    | sed 's/ — EXPECTED FAIL//' | sort -u || true)
+          if [ "$declared" != "$printed" ]; then
+            echo "EXPECTED the same expected-fail set in both places. Difference (< declared here, > printed by make check):"
+            diff <(printf '%s\n' "$declared") <(printf '%s\n' "$printed") || true
+            echo "  declared here      : $(printf '%s' "$declared" | tr '\n' ' ')"
+            echo "  printed by make check: $(printf '%s' "$printed" | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "expected-failures agree — declared here and printed by make check: $(printf '%s' "$declared" | tr '\n' ' ')"
+
+      # ── (b) THE READ DOORS ───────────────────────────────────────────────────────────────────
+      # EXPECTED: 'RESULT: N passed, 0 failed' and exit 0. The harness proves the doors cannot
+      # write, that CLI bytes equal MCP bytes, that every item carries an accession, that an empty
+      # result is NAMED, that the answer is identical with the network torn away, and that the store
+      # is byte- and mtime-identical before and after.
+      - name: (b) bash annot/selftest.sh — every door check passes and the store is not touched
+        run: |
+          set -uo pipefail
+          bash annot/selftest.sh 2>&1 | tee /tmp/doors.out
+          rc=${PIPESTATUS[0]}
+          if ! grep -qE '^RESULT: [0-9]+ passed, 0 failed' /tmp/doors.out; then
+            echo "EXPECTED 'RESULT: N passed, 0 failed'. The FAIL lines above name the check that"
+            echo "  broke (WRITES · ONE-DEF · ACCESSION · EMPTY · OFFLINE · NO-STORE-WRITE · ANSWER · NO-STORE)."
+          fi
+          [ "$rc" = 0 ] || { echo "annot/selftest.sh exited $rc — the doors are the finding, not flaky"; exit "$rc"; }
+          grep -qE '^RESULT: [0-9]+ passed, 0 failed' /tmp/doors.out || exit 1
+
+      # ── (c) HYGIENE — the debris row's grep ─────────────────────────────────────────────────
+      # EXPECTED: zero tracked paths matching (*.bak-* · *~ · *.orig · *.rej · *.pyc). The same
+      # names guix.scm's packaging filter and the Makefile's hygiene target refuse, so the
+      # repository, the build filter and this workflow cannot drift apart.
+      - name: (c) hygiene — no editor or rollback debris is tracked
+        run: |
+          set -uo pipefail
+          total=$(git ls-files | grep -c . || true)
+          debris=$(git ls-files | grep -E '(\.bak-|~$|\.orig$|\.rej$|\.pyc$)' || true)
+          if [ -n "$debris" ]; then
+            echo "EXPECTED 0 debris paths among $total tracked path(s); found:"
+            printf '%s\n' "$debris" | sed 's/^/    OFFENDER: /'
+            echo "  *.bak-* · *~ · *.orig · *.rej · *.pyc are editor or rollback leftovers."
+            echo "  .gitignore refuses them, so a tracked one means it was added with --force."
+            exit 1
+          fi
+          echo "hygiene GREEN — 0 debris among $total tracked path(s)"
+
+      # ── (d) ONE DEPENDENCY, ONE VERSION — the pin row's grep ────────────────────────────────
+      # EXPECTED: exactly ONE distinct version of the one dependency across the shipped tree, and
+      # every file that names it names that version. It fails, naming the offenders, when a file
+      # names the dependency with NO version, when a file names a RANGE (>= · <= · ~= · < · >), or
+      # when two files name DIFFERENT versions.
+      - name: (d) one dependency, one version
+        run: |
+          set -uo pipefail
+          INC="--include=*.md --include=*.toml --include=*.scm"
+          R=$(grep -rHoiE $INC -e 'pyyaml[[:space:]]*(>=|<=|~=|>|<)[[:space:]]*v?[0-9]' . || true)
+          if [ -n "$R" ]; then
+            echo "EXPECTED one exact version; a RANGE is not one version:"
+            printf '%s\n' "$R" | sed 's/^/    OFFENDER: /'
+            exit 1
+          fi
+          T=$(grep -rHoiE $INC -e 'pyyaml[[:space:]]*(==)?[[:space:]]*v?[0-9]+(\.[0-9]+)+' . || true)
+          V=$(printf '%s\n' "$T" | sed -e 's/^.*://' -e 's/^[^0-9]*//' | grep . | LC_ALL=C sort -u || true)
+          N=$(printf '%s\n' "$V" | grep -c . || true)
+          if [ "$N" -ne 1 ]; then
+            echo "EXPECTED exactly 1 distinct version across the tree; found $N: $(printf '%s' "$V" | tr '\n' ' ')"
+            printf '%s\n' "$T" | sed 's/^/    CITED: /'
+            exit 1
+          fi
+          MISS=""
+          for f in $(grep -rli $INC -e 'pyyaml' . | LC_ALL=C sort || true); do
+            printf '%s\n' "$T" | grep -qF "$f:" || MISS="$MISS $f"
+          done
+          if [ -n "$MISS" ]; then
+            echo "EXPECTED every file that names the dependency to name its version; these do not:$MISS"
+            exit 1
+          fi
+          echo "ONE-VERSION GREEN — $(printf '%s\n' "$T" | grep -c . ) citation(s) in $(grep -rli $INC -e 'pyyaml' . | grep -c . ) file(s); one version: $(printf '%s' "$V")"
+
+      # ── (e) THE WITHHELD-CITATION RECONCILIATION ────────────────────────────────────────────
+      # EXPECTED: 'RESULT RECONCILED' and exit 0 — every path this tree cites either exists here,
+      # resolves to a file of that name, or is a row in docs/WITHHELD.md with the '†' footnote the
+      # reader needs. This is the tree's one statement about what it does not contain, checked rather
+      # than promised.
+      - name: (e) every cited path exists, resolves, or is a row in docs/WITHHELD.md
+        run: |
+          set -uo pipefail
+          python3 tools/withheld-reconcile.py --quiet > /tmp/withheld.out 2>&1; rc=$?
+          grep '^RESULT' /tmp/withheld.out || true
+          if [ "$rc" != 0 ]; then
+            echo "EXPECTED 'RESULT RECONCILED'. A red here is one of two findings, each named below:"
+            echo "  UNDECLARED  — the tree cites a path it does not contain and is not a row in docs/WITHHELD.md"
+            echo "  NO-FOOTNOTE — a withheld path is cited in a reader-facing file with no '†'"
+            python3 tools/withheld-reconcile.py || true   # verbose: prints every offender by file:line
+            exit "$rc"
+          fi
+
+      # ── (f) THE RELEASE CLAIM — a doc that names a ref must name one that exists ─────────────
+      # EXPECTED: 'RESULT TAG-CLAIM NONE' (nothing claims a tag) or 'RESULT TAG-CLAIM GREEN' (every
+      # claimed ref is present in THIS repository's tags). The defect it closes
+      # (req-P2-THE-RELEASE-IS-FALSIFIABLE-TAG-AND-R): CHANGELOG.md said the release was "named by
+      # the tag v0.1.0 on the publish commit" while `git tag` on the published repository was empty,
+      # and no command failed when that became false. Now one does — and if the ref is never made,
+      # the correct repair is to word the line about the ref, not to delete the check.
+      - name: (f) a doc that names a release tag names a ref this repository has
+        run: |
+          set -uo pipefail
+          python3 tools/tag-claim-check.py . --remote "$(git remote get-url origin)" > /tmp/tagclaim.out 2>&1; rc=$?
+          grep -E '^(RESULT|TAG-CLAIM-WITHOUT-REF)' /tmp/tagclaim.out || true
+          if [ "$rc" != 0 ]; then
+            echo "EXPECTED no tag claim, or every claimed ref present in this repository. A red here is one of:"
+            echo "  TAG-CLAIM-WITHOUT-REF — a doc names a release tag this repository does not have"
+            echo "  UNVERIFIABLE          — no receipt source answered, so a claim could not be checked"
+            cat /tmp/tagclaim.out
+            exit "$rc"
+          fi

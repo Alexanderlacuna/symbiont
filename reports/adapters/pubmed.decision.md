@@ -69,10 +69,12 @@ Drive the MCP server over stdio (or its Streamable HTTP mode) for the search leg
 - MCP candidate wp-a/nature-academic-search: ★384, MIT, archived=False, pushed 2026-10-01T22:10:37Z (39 days ago); README sha256 6446d4defdac90ae…
   - README keywords: DOI, PMCID, PMID, count
 - Exa leg SKIPPED BY NAME: EXA_API_KEY is not set — the GitHub API and the source's own count endpoint carried the decision
-- survey evidence: reports/MCP-SURVEY-BIOINFORMATICS-REPORT.md — https://github.com/cyanheads/pubmed-mcp-server · .../esearch.fcgi?db=pubmed&term=Wt1[Title]+AND+mouse[MeSH+Terms]&rettype=count
+- survey evidence: reports/MCP-SURVEY-BIOINFORMATICS-REPORT.md† — https://github.com/cyanheads/pubmed-mcp-server · .../esearch.fcgi?db=pubmed&term=Wt1[Title]+AND+mouse[MeSH+Terms]&rettype=count
 
 ## Refusals and gaps
 
 - none: every permitted call answered
 
 <!-- decided by harvester.discover at 2026-11-10T21:19:51.800037+00:00 -->
+
+† withheld from this public tree; see docs/WITHHELD.md.

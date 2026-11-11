@@ -67,10 +67,12 @@ Write the adapter against the documented API (bulk release files, no count endpo
 - MCP candidate musharna/plant-genomics-mcp: ★8, MIT, archived=False, pushed 2026-11-01T02:47:14Z (9 days ago); README sha256 ffdb3666b54ad795…
   - README keywords: DOI, bulk, release, snapshot
 - Exa leg SKIPPED BY NAME: EXA_API_KEY is not set — the GitHub API and the source's own count endpoint carried the decision
-- survey evidence: reports/MCP-SURVEY-BIOINFORMATICS-REPORT.md — https://www.ensembl.org/biomart/martservice
+- survey evidence: reports/MCP-SURVEY-BIOINFORMATICS-REPORT.md† — https://www.ensembl.org/biomart/martservice
 
 ## Refusals and gaps
 
 - none: every permitted call answered
 
 <!-- decided by harvester.discover at 2026-11-10T21:20:09.968556+00:00 -->
+
+† withheld from this public tree; see docs/WITHHELD.md.

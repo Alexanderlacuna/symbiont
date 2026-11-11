@@ -87,6 +87,33 @@ Every response carries
 is `sha256` of the published view recomputed at read time, compared with the hash recorded in the
 provenance sidecar — a store that was edited under the core cannot pass silently.
 
+### A view travels with its receipt — the door will not read it otherwise
+
+The station's rule, enforced at the door: **a view is a `.tsv` plus its two sidecars, or it is not a
+view.** In `view/` beside `mouse_gene.v1.tsv` there must be
+
+    mouse_gene.v1.provenance.json   source(s) · release(s) · fetched_at · licence (with attribution)
+                                    · row count · the tsv's sha256 · the schema's sha256
+    mouse_gene.v1.schema.json       the columns, their types and the view's key
+
+Both are written by the same publish run that writes the view (`symbiont/loop.py`'s publish step, or
+`python3 -m symbiont.loop --rebuild-from-raw`, which re-derives all three from the store's raw zone
+and refuses on the first hash that disagrees) — never by hand. A `.tsv` with no sidecar is a number
+nobody can trace, so `annot` REFUSES to read it, from every door, with a class of its own:
+
+```
+REFUSED[view-unreceipted]: the view …/view/mouse_gene.v1.tsv is on disk but its receipt is not —
+looked for …/view/mouse_gene.v1.provenance.json and …/view/mouse_gene.v1.schema.json. … Regenerate
+them from this store's own raw zone with: python3 -m symbiont.loop --rebuild-from-raw --store …. Nothing
+was read and nothing was written.
+```
+
+`status: "refused"`, `reason: "view-unreceipted"`, `items: []`, exit code 3, and the missing sidecars
+named in `refusal.missing`. This is deliberately NOT `store-missing`: there the data is absent, here the
+data is present and its receipt is gone — a different defect, and one that would otherwise be answered
+around. The published dataset (`harvester-view/`) follows the same rule: the tsv there is accompanied by
+its two sidecars, and `annot/selftest.sh` check H6 proves the sidecar hash equals `sha256sum` of the tsv.
+
 ## Doors, verbatim
 
 ```bash
