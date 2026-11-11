@@ -71,6 +71,35 @@ Stations may be independent in implementation, independent in governance and dif
 not identical internals.
 ```
 
+## 2c · TWO RELATIONSHIPS, NOT ONE — data federation vs verification federation
+```
+DATA FEDERATION          A consumes B's handover. A larger corpus; every row `verified: manifest`; A applies its own licence gate.
+VERIFICATION FEDERATION   A and B each derive the SAME authority release independently, then COMPARE. No rows change hands; the output is a
+                          disagreement record. This is the stronger relationship and the more valuable one.
+```
+A product is not the other, and a station may do either without the other. Data federation needs only the contract; verification federation needs a
+comparison protocol and a shared comparison key — which is the schema contract again (`upstream_source`, `upstream_accession`, `upstream_release`).
+
+### THE INDEPENDENCE CAVEAT — and the one mechanism that makes it real
+```
+Two stations running the SAME code are not independent implementations. Agreement between them isolates INPUT and ENVIRONMENT differences
+(a partial read, a truncated page, a rate-limited window, a mirror that lags, a run at a different minute) — it does not test our parser, our xref
+rules or our reject logic, because both sides run them.
+⇒ agreement across independent inputs is a control on the WORLD; only agreement across independent IMPLEMENTATIONS is a control on OUR CODE.
+The cheapest way to get the second without a second station: a DIFFERENTIAL ORACLE inside one station — fetch the same authority by two independent paths
+(e.g. Ensembl via the BioMart API and via the FTP dump; MGI via its report files and via its count endpoint) and compare the two. Two code paths, one
+authority, no federation required.
+```
+
+### WHAT A DISAGREEMENT DOES AND DOES NOT MEAN
+```
+it means AT LEAST ONE derivation is wrong. It never says which. The tie-break is re-derivation from the raw payload (`--rebuild-from-raw`), which both
+stations already support and both already store — so the disagreement record can name the exact accessions and the reason class, and the resolution is an
+artefact rather than an argument.
+And one danger to state plainly: agreement between two stations sharing our code can manufacture false confidence ("both say 77,645, so it is right").
+Agreement is evidence about the world only to the extent the derivations were actually independent.
+```
+
 ## 3 · VERIFICATION DEPTH — the field that keeps a corpus honest
 Every row and every source block carries a `verified` field:
 ```
