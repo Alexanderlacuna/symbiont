@@ -222,6 +222,8 @@ $ python3 -m symbiont.loop --sources <name> --since auto --store /tmp/try
 count with the source's own. A thing that cannot produce a count can still be used as a **tool** (search, lookup, an agent's helper) but it can
 **never be admitted as a source** — the station refuses it by name. A corpus you cannot count is a corpus you cannot defend.
 
+Per-source data terms live in `docs/SOURCE-TERMS.md` (the station's own code is MIT).
+
 ## What is in this repository
 
 | path | what it is |
