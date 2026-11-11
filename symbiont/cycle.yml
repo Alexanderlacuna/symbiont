@@ -1,5 +1,6 @@
 # CYCLE.YML — THE SENTINEL CYCLE'S ONE CONFIG (req-P1-THE-SENTINEL-CYCLE-the-stations-own, 2026-11-11)
-# Design: reports/DESIGN-SENTINEL.md. Reader: symbiont/cycle.py — the ONLY code that parses this file.
+# Design: ../docs/DESIGN-SENTINEL.md. Reader: symbiont/cycle.py — the ONLY code that parses this file.
+# † = held back from this public subset; every withheld path is a row in ../docs/WITHHELD.md.
 #
 # SHIPPED OFF. `enabled: false` below is the owner's default, quoted from the row: "cycle.yml shipped
 # with enabled: false". While it is false the cycle does NOTHING AT ALL: no request leaves the box, no
@@ -48,10 +49,10 @@ surfaces:
   # THE DEPLOYMENT'S OWN SURFACE REGISTRY. Missing or empty -> REFUSED[no-surfaces]: the cycle does
   # not invent where to look. Two forms are read:
   #   · a plain line-based registry (this one): one listed query per line, `#` comments — the same
-  #     file the logged GitHub sweep uses (tools/discover-sweep.sh), so the two cannot drift;
+  #     file the logged GitHub sweep uses (tools/discover-sweep.sh†), so the two cannot drift;
   #   · a structured <registry>.yml naming surfaces explicitly (kind + candidates with their own
   #     count_endpoint), for a deployment that knows how to count what it lists.
-  registry: tools/discover-sweep.queries.txt
+  registry: tools/discover-sweep.queries.txt   # † NOT SHIPPED (../docs/WITHHELD.md): point this at your own listed-queries file; left empty, discovery answers REFUSED[no-surfaces] and invents nothing
   kind: github_search           # how a PLAIN registry's queries are read (a .yml names its own)
   endpoint: https://api.github.com/search/repositories
   per_page: 10                  # results per query; the count is the API's own total_count

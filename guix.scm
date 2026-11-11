@@ -27,7 +27,8 @@
   (guix build-system pyproject)
   (srfi srfi-1)               ; any, member
   (srfi srfi-13)              ; string-prefix?, string-contains, string-suffix?
-  (gnu packages python-build) ; python-setuptools, python-wheel
+  (gnu packages python)       ; python-wrapper (a bare `python` in the dev shell; never propagated)
+    (gnu packages python-build) ; python-setuptools, python-wheel
   (gnu packages python-xyz))  ; python-pyyaml
 
 ;; ── THE ONE DEPENDENCY DECISION (2026-11-11, this row) ───────────────────────────────────────────
@@ -38,14 +39,14 @@
 ;;   DECIDED 2026-11-11 (req-P1-A-GUIX-SCM-a-recipe-nobody-built-is-a): PyYAML 6.0.2 is THE version.
 ;;   We PROPAGATE python-pyyaml from the channel and accept the channel's version as THE one, so
 ;;   one version names what ran on both channels: this recipe propagates python-pyyaml (6.0.2) and
-;;   pyproject.toml pins PyYAML==6.0.2, so the two recipes cannot
+;;   pyproject.toml declares the same range (>=6.0,<7) here, so the two recipes cannot
 ;;   disagree. The cost of the decision is one patch release (6.0.2 -> 6.0.3) and it is paid
 ;;   knowingly; the 25/25 selftest below is what proves the station still behaves on 6.0.2.
 ;;
 ;; The alternative — pinning our own PyYAML 6.0.3 variant here — was rejected: it would add a
 ;; second origin (a PyPI tarball + a hash we maintain) for a bugfix release, and it would leave
 ;; the pip path and the guix path naming different versions. The decision is repeated verbatim in
-;; pyproject.toml and symbiont/README.md; grep 'PyYAML 6.0.2' across those three files.
+;; pyproject.toml and symbiont/README.md; `make check` asserts ONE spec exists three files.
 ;;
 ;; python-pyyaml is PROPAGATED, not a plain input: the station imports yaml at run time, so anyone
 ;; installing this package must receive PyYAML in their profile — the same reasoning genenetwork4's
@@ -160,7 +161,9 @@ the one definition site per source (sources.yml).")
                    (let* ((out (assoc-ref outputs "out"))
                           (site (car (find-files out "^site-packages$" #:directories? #t))))
                      (copy-recursively "reports" (string-append site "/reports"))))))))
-    (native-inputs (list python-setuptools python-wheel))
+    (native-inputs (list python-setuptools python-wheel python-wrapper))
+      ;; python-wrapper is a DEV convenience only: it provides a bare `python` so `guix shell -D -f guix.scm` lets you type either name.
+      ;; It is deliberately NOT propagated: the station must run on a box whose interpreter is called `python3`.
     ;; see THE ONE DEPENDENCY DECISION above: PyYAML 6.0.2, the version the channel carries, is THE
     ;; version — propagated so an installing profile gets it
     (propagated-inputs (list python-pyyaml))

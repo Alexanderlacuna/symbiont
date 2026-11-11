@@ -27,6 +27,15 @@ names, each as a quoted line and an exit code:
   F10 NO REGRESSION  the REAL PubMed MCP still works through the OLD pinned client
                  (symbiont/literature/mcp.py) — unchanged, and the pin/licence/handshake still hold
   F11 loop.py untouched: neither loop mentions this adapter, and the module imports no loop
+  F12 DRIFT SIGNAL  the whole tools/list, at admission and on every run
+                 (req-P1-THE-DRIFT-SIGNAL-EXPIRE-THE-TRIAL): the admission record carries the
+                 tools/list sha256 + declared version; a server that GAINS ONE TOOL is
+                 REFUSED[schema-drift] naming BOTH hashes, the trial is marked expired, and the
+                 NEXT run SKIPS the source BY NAME with the expiry reason (no child process)
+  F13 VERSION DRIFT the same, with ONLY serverInfo.version moved -> expired too
+  F14 RE-TRIAL   the way back from an expiry: --retrial re-reads tools/list inside the sandbox,
+                 makes ZERO tool calls, quotes both sides, re-arms the trial; the next run
+                 harvests normally
 
 Usage: python3 -m symbiont.selftest_mcp_source            (exit 0 only when all pass)
        python3 -m symbiont.selftest_mcp_source --offline  (skips F10, the only test that needs the
@@ -74,10 +83,12 @@ def run(store: str, extra: list[str], env_extra: dict | None = None, term: str =
         source: str = "") -> tuple[int, str]:
     env = dict(os.environ)
     env.pop("MCP_FIXTURE_SHAPE", None)
+    env.pop("MCP_FIXTURE_VERSION", None)
     env.update(env_extra or {})
     argv = CLI + ["--config", CONFIG, "--store", store, "--term", term]
     if source:
         argv += ["--source", source]
+    argv += list(extra or [])
     p = subprocess.run(argv, cwd=FARM, env=env, capture_output=True, text=True, timeout=300)
     return p.returncode, p.stdout + p.stderr
 
@@ -90,14 +101,28 @@ def decisive(out: str, *prefixes: str) -> str:
 
 
 def run_record(store: str, source: str) -> dict:
+    """The NEWEST run record for a source, by mtime — not by file name: a skip record is written
+    with a `-skipN` suffix when it shares a run id's second with another run, and name order would
+    then return the elder record while looking like the newest."""
     d = os.path.join(store, "runs")
     if not os.path.isdir(d):
         return {}
-    for name in sorted(os.listdir(d), reverse=True):
-        if name.endswith(f".{source}.json"):
-            with open(os.path.join(d, name), encoding="utf-8") as fh:
-                return json.load(fh)
+    cands = [os.path.join(d, name) for name in os.listdir(d)
+             if name.endswith(f".{source}.json")]
+    for p in sorted(cands, key=lambda q: (os.path.getmtime(q), q), reverse=True):
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh)
     return {}
+
+
+def trial_of(store: str, source: str) -> dict:
+    """The trial the last run left on disk (state/<id>.trial.json) — the drift signal's memory."""
+    p = os.path.join(store, "state", f"{source}.trial.json")
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
 
 
 def rows(store: str, source: str) -> list[dict]:
@@ -205,6 +230,89 @@ def f6_pin_drift(store: str, tmp: str) -> None:
           f"exit={ok_run.returncode} declared={sha[:16]}…")
     check("F6 PIN DRIFT -> REFUSED[schema-drift], exit 7, quoting both hashes",
           drift.returncode == 7 and "pin broken" in line and sha[:16] in line, line[:240])
+
+
+def f12_drift_signal(tmp: str) -> None:
+    """NSC 1+2: unchanged server runs normally with tools_hash in the record; a server that GAINS
+    ONE TOOL is REFUSED[schema-drift] naming BOTH hashes; the next run SKIPS it by name."""
+    store = os.path.join(tmp, "driftsig")
+    rc0, out0 = run(store, [], source="fixture_alpha")
+    rec0 = run_record(store, "fixture_alpha")
+    pinned = rec0.get("tools_hash") or ""
+    trial0 = trial_of(store, "fixture_alpha")
+    admitted = dict(trial0.get("admitted") or {})
+    check("F12a unchanged server -> exit 0, and the record carries tools_hash AND version",
+          rc0 == 0 and rec0.get("status") == "PUBLISHED" and len(pinned) == 64
+          and rec0.get("version") == "1.0.0",
+          f"tools_hash={pinned} version={rec0.get('version')} "
+          f"version_declared={rec0.get('version_declared')}")
+    check("F12b AT ADMISSION the tools/list sha256 + declared version are stored beside the trial",
+          len(str(admitted.get("tools_sha256") or "")) == 64 and admitted.get("version") == "1.0.0",
+          f"state/fixture_alpha.trial.json admitted={json.dumps(admitted)}")
+
+    rc1, out1 = run(store, [], env_extra={"MCP_FIXTURE_SHAPE": "tools"}, source="fixture_alpha")
+    line1 = decisive(out1, "REFUSED[schema-drift]")
+    seen = str(((trial_of(store, "fixture_alpha").get("seen") or {}).get("tools_sha256")) or "")
+    check("F12c a server that GAINS ONE TOOL -> REFUSED[schema-drift], exit 7, BOTH hashes quoted",
+          rc1 == 7 and bool(pinned) and pinned in line1 and bool(seen) and seen != pinned
+          and seen in line1 and "alpha_export" in line1, line1[:240])
+    check("F12c and the trial is marked EXPIRED on disk (state=expired, both sides kept)",
+          trial0.get("state") == "admitted"
+          and trial_of(store, "fixture_alpha").get("state") == "expired",
+          f"state={trial_of(store, 'fixture_alpha').get('state')} "
+          f"why={trial_of(store, 'fixture_alpha').get('why')}")
+
+    rc2, out2 = run(store, [], source="fixture_alpha")
+    skip = decisive(out2, "SKIP")
+    rec2 = run_record(store, "fixture_alpha")
+    check("F12d the NEXT run SKIPS it BY NAME with the expiry reason (no child, no tool call)",
+          rc2 == 0 and "fixture_alpha" in skip and "reason=trial-expired" in skip
+          and rec2.get("status") == "SKIPPED" and rec2.get("code") == "trial-expired"
+          and (rec2.get("cost") or {}).get("tool_calls") == 0
+          and (rec2.get("confine") or {}).get("tier") == "not-run", skip[:240])
+
+
+def f13_version_drift(tmp: str) -> None:
+    """NSC 4: a server that changes ONLY its version string expires the trial too."""
+    store = os.path.join(tmp, "versiondrift")
+    rc0, _ = run(store, [], source="fixture_alpha")
+    rc1, out1 = run(store, [], env_extra={"MCP_FIXTURE_VERSION": "2.0.0"}, source="fixture_alpha")
+    line1 = decisive(out1, "REFUSED[schema-drift]")
+    check("F13 ONLY the version string moves -> REFUSED[schema-drift], exit 7, both versions quoted",
+          rc0 == 0 and rc1 == 7
+          and "declared version 1.0.0 -> serverInfo.version 2.0.0" in line1, line1[:240])
+    rc2, out2 = run(store, [], source="fixture_alpha")
+    skip = decisive(out2, "SKIP")
+    check("F13b and the next run skips it by name with that same expiry reason",
+          rc2 == 0 and "reason=trial-expired" in skip and "serverInfo.version 2.0.0" in skip,
+          skip[:240])
+
+
+def f14_retrial(tmp: str) -> None:
+    """The way back from an expiry is an operator act with a record: --retrial, zero tool calls."""
+    store = os.path.join(tmp, "retrial")
+    run(store, [], source="fixture_alpha")
+    run(store, [], env_extra={"MCP_FIXTURE_SHAPE": "tools"}, source="fixture_alpha")
+    rc1, out1 = run(store, ["--retrial"], source="fixture_alpha")
+    rec1 = run_record(store, "fixture_alpha")
+    prev = dict((rec1.get("retrial") or {}).get("previous") or {})
+    check("F14 --retrial re-arms the trial with ZERO tool calls and quotes both sides",
+          rc1 == 0 and rec1.get("status") == "RE-TRIAL"
+          and (rec1.get("cost") or {}).get("tool_calls") == 0
+          and prev.get("state") == "expired" and bool(prev.get("pinned")),
+          f"exit={rc1} status={rec1.get('status')} "
+          f"tool_calls={(rec1.get('cost') or {}).get('tool_calls')} "
+          f"previous={json.dumps(prev.get('pinned') or {})}")
+    rc2, out2 = run(store, [], source="fixture_alpha")
+    rec2 = run_record(store, "fixture_alpha")
+    check("F14b the harvest after a re-trial runs normally (and carries tools_hash)",
+          rc2 == 0 and rec2.get("status") == "PUBLISHED"
+          and len(str(rec2.get("tools_hash") or "")) == 64,
+          f"exit={rc2} status={rec2.get('status')} tools_hash={rec2.get('tools_hash')}")
+    rc3, out3 = run(store, ["--retrial"], source="fixture_alpha")
+    check("F14c a re-trial of a HEALTHY source is REFUSED (it would erase the drift baseline)",
+          rc3 == 2 and "not 'expired'" in decisive(out3, "REFUSED[config]"),
+          decisive(out3, "REFUSED[config]")[:200])
 
 
 def f7_http(store: str, tmp: str) -> None:
@@ -340,6 +448,9 @@ def main(argv=None) -> int:
         f4_nocount_tool(os.path.join(tmp, "gamma-tool"))
         f5_shape_drift(os.path.join(tmp, "drift"))
         f6_pin_drift(os.path.join(tmp, "pindrift"), tmp)
+        f12_drift_signal(tmp)
+        f13_version_drift(tmp)
+        f14_retrial(tmp)
         f7_http(os.path.join(tmp, "http"), tmp)
         f8_sandbox(os.path.join(tmp, "sandbox"))
         f9_accounting(os.path.join(tmp, "alpha"))

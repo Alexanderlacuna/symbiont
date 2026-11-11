@@ -1,0 +1,72 @@
+{
+  "findings": [],
+  "generated_at": "2026-11-11T09:43:36.162956+00:00",
+  "rebuilt_from_raw": true,
+  "rows": 77144,
+  "run_id": "receipt-regen-1",
+  "schema_sha256": "c985bdd5e515e3268fbb39b8e81bf482f362e4aed102d855a7a61bc080724a5a",
+  "skipped": {},
+  "sources": {
+    "ensembl_biomart": {
+      "fetched_at": "2026-11-09T21:27:10.939036+00:00",
+      "licence": {
+        "name": "Ensembl data: no restrictions on access or use",
+        "quote": "Ensembl imposes no restrictions on access to, or use of, the data provided and the software used to analyse and present it.",
+        "reused_from": "corrupt-baseline",
+        "terms_sha256": "0b941a2c47e72655f3271854969c13de93647f89c101e7d1668779c593be4208",
+        "url": "https://www.ensembl.org/info/about/legal/disclaimer.html"
+      },
+      "published_count": 78348,
+      "release": "ensembl-116",
+      "snapshots": {
+        "biomart_tsv": {
+          "bytes": 3733063,
+          "path": "harvester/store/ship1-fire/raw/ensembl_biomart/ensembl-116/20d8b40ca8c0a87a1d0eab4fea881c09957f6c364b76972de96608069a12bc0c.tsv",
+          "release": "ensembl-116",
+          "sha256": "20d8b40ca8c0a87a1d0eab4fea881c09957f6c364b76972de96608069a12bc0c",
+          "url": "https://www.ensembl.org/biomart/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+        }
+      },
+      "stale": null,
+      "url": [
+        "https://www.ensembl.org/biomart/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+      ]
+    },
+    "mgi": {
+      "fetched_at": "2026-11-09T21:27:46.558467+00:00",
+      "licence": {
+        "name": "MGI data and annotations: CC-BY 4.0 (attribution required)",
+        "quote": "MGI data and annotations are licensed under a <a href=\"https://creativecommons.",
+        "reused_from": "corrupt-baseline",
+        "terms_sha256": "6c90a56cddb0e609dad5178e9582ddfb00413f0d3b18e2ebaec879c5a68cf4b0",
+        "url": "https://www.informatics.jax.org/mgihome/other/copyright.shtml"
+      },
+      "published_count": null,
+      "release": "mgi-2026-11-09",
+      "snapshots": {
+        "mrk_ensembl": {
+          "bytes": 16192674,
+          "path": "harvester/store/ship1-fire/raw/mgi/mgi-2026-11-09/4891f2543ed5a7366299d77e96e8abd2a91a4906dbdc0144b43e8902bdf96a6a.rpt",
+          "release": "mgi-2026-11-09",
+          "sha256": "4891f2543ed5a7366299d77e96e8abd2a91a4906dbdc0144b43e8902bdf96a6a",
+          "url": "https://www.informatics.jax.org/downloads/reports/MRK_ENSEMBL.rpt"
+        },
+        "mrk_list1_gz": {
+          "bytes": 13780721,
+          "path": "harvester/store/ship1-fire/raw/mgi/mgi-2026-11-09/52e73202947a04b3edeaf1a583f1d03c59ad9e90911f121d3ac7eaac84849d1e.rpt.gz",
+          "release": "mgi-2026-11-09",
+          "sha256": "52e73202947a04b3edeaf1a583f1d03c59ad9e90911f121d3ac7eaac84849d1e",
+          "url": "https://www.informatics.jax.org/downloads/reports/MRK_List1.rpt.gz"
+        }
+      },
+      "stale": null,
+      "url": [
+        "https://www.informatics.jax.org/downloads/reports/MRK_ENSEMBL.rpt",
+        "https://www.informatics.jax.org/downloads/reports/MRK_List1.rpt.gz"
+      ]
+    }
+  },
+  "version": 1,
+  "view": "mouse_gene",
+  "view_sha256": "4c9795b92bb8d754a3f82565939fbb0513b3b32eadcd51844c810a8af30e7cd2"
+}

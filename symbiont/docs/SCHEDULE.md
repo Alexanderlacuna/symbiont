@@ -3,6 +3,9 @@
 (req-P1-THE-SCHEDULE-MODEL-when-the-station. The implementation of this page is ONE file,
 `symbiont/station-job.sh`; the fixtures are `symbiont/selftest_schedule.py`. One page, no more.)
 
+† held back from this public subset: the farm's heartbeat machinery, not station code. Every such path is a row
+in [`../docs/WITHHELD.md`](../docs/WITHHELD.md) — a deployment brings its own scheduler.
+
 ## 1 · JOBS — one cron table entry each, each writing its own heartbeat row
 
 | job (heartbeat key) | cadence | cron (one entry per job) | what it does |
@@ -10,7 +13,7 @@
 | `station-fetch-ensembl_biomart` | weekly | `17 3 * * 2` | `station-job.sh fetch ensembl_biomart` — the mining loop, one source |
 | `station-fetch-mgi` | weekly | `23 5 * * 2` | `station-job.sh fetch mgi` |
 | `station-digest` | daily | `41 4 * * *` | one digest page per day: per-source health + tick counts + findings + the four digests' gaps/suggest refresh (`symbiont.digests write`, DIGESTS.md) |
-| `station-discovery` | weekly | `37 2 * * 6` | `tools/discover-sweep.sh` (the logged discovery sweep) |
+| `station-discovery` | weekly | `37 2 * * 6` | `tools/discover-sweep.sh`† (the logged discovery sweep) |
 | `station-health` | hourly | `7 * * * *` | `symbiont health` (disk only, zero requests) → the health digest |
 | `station-manifest` | daily, **on change only** | `11 5 * * *` | dry-run the manifest, compare the staged sha256; regenerate only if changed |
 
@@ -40,7 +43,7 @@ Every fire of `station-job.sh` appends ONE line to `<store>/schedule/ticks.jsonl
 
     {"ts":…,"iso":"…","job":"fetch","source":"mgi","jobkey":"fetch-mgi","outcome":"ran|missed","reason":"…","detail":"…","pid":…}
 
-`outcome=missed` ALWAYS carries a reason: **held** (the owner's HOLD switch `nurse/the operator's hold switch` is
+`outcome=missed` ALWAYS carries a reason: **held** (the operator's hold switch is
 set — the fetch, digest, discovery and manifest passes stand down; only the health probe keeps
 looking) · **locked** (a holder holds the source) · **budget** (the run refused `REFUSED[budget]`,
 T5) · **down** (the network is down: a pre-flight connect to the provider refused, zero provider
@@ -55,10 +58,10 @@ gap: the gap is either a logged miss with a reason, or a named finding (§4), or
 ## 4 · OWNERSHIP — every job is watched; 2x its interval silent is a NAMED finding
 
 - One cron table entry per job (table §1), each entry running `station-job.sh`, which sources the
-  farm's heartbeat library (`nurse/hb.sh`) with its own key — so every fire stamps
-  `nurse/heartbeats/<key>` with `exit= ts= iso= pid= dur=` and a run marker while alive.
-- `nurse/heartbeats/REGISTRY.tsv` pins each station key to its interval; the farm sweep
-  (`tools/dead-end-sweep.sh`) reports **HEARTBEAT-MISSING** when a key is silent for 2x its
+  farm's heartbeat library (`nurse/hb.sh`†) with its own key — so every fire stamps
+  `nurse/heartbeats/<key>`† with `exit= ts= iso= pid= dur=` and a run marker while alive.
+- `nurse/heartbeats/REGISTRY.tsv`† pins each station key to its interval; the farm sweep
+  (`tools/dead-end-sweep.sh`†) reports **HEARTBEAT-MISSING** when a key is silent for 2x its
   interval — a stopped job appears within two intervals, a slow-but-running one does not.
 - The station polices itself too: the hourly health probe writes
   `<store>/schedule/health-digest.md`, and any job whose last pass is older than **2x its interval**

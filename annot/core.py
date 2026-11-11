@@ -34,10 +34,55 @@ CORE = "annot"
 CORE_VERSION = 1
 
 FARM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_STORE = os.path.join(FARM, "symbiont", "store")
 
 VIEW_NAME = "mouse_gene"
 VIEW_VERSION = 1
+
+# --------------------------------------------------------------------------------------------------
+# WHICH STORE THE DOORS READ, and what a door does when there is none.
+# The harvested store (symbiont/store) is WITHHELD from the public tree, so a fresh clone has no store
+# where the docs point — and the first call a stranger makes is the first call that used to die with a
+# FileNotFoundError. Three candidates, in the order a box can satisfy them:
+#   $ANNOT_STORE                   a pointed store is OBEYED EVEN WHEN IT IS ABSENT: its absence is the
+#                                  REFUSED[store-missing] refusal, never a silent fall-back to another
+#                                  store (a door that quietly reads a different store is lying)
+#   symbiont/store                 the harvested store, when this tree has one
+#   symbiont/fixtures/store-doors  the COMMITTED fixture store (241 published rows, raw snapshots,
+#                                  run/state records, xref, hashes and licence lines intact) so a clone
+#                                  answers out of the box
+# With NOTHING on disk the refusal names DEFAULT_STORE, the path the docs tell a stranger to create.
+LIVE_STORE = os.path.join(FARM, "symbiont", "store")
+FIXTURE_STORE = os.path.join(FARM, "symbiont", "fixtures", "store-doors")
+STORE_CANDIDATES = (LIVE_STORE, FIXTURE_STORE)
+DEFAULT_STORE = LIVE_STORE          # the path a refusal names when no candidate is on disk
+
+# THE ONE LINE SAYING WHICH STORE ANSWERED. A stranger's first call must not have to open the
+# provenance block and compare paths to learn whether the answer came from a store they mined or from
+# the fixture this repository ships. The sentence travels IN the response (`provenance.store_line`),
+# so it is the same bytes at every door — CLI, MCP, REST and page all pass dispatch()'s bytes through
+# untouched — and no door can print a different line than the one the core chose.
+STORE_LINE_LIVE = "store: symbiont/store \u2014 the live store"
+STORE_LINE_FIXTURE = "store: fixtures/store-doors \u2014 no live store found"
+
+
+def store_line(path: str, explicit: bool = False) -> str:
+    """ONE line: which store answered, and why that one (live, shipped fixture, or pointed)."""
+    ap = os.path.abspath(path)
+    if not os.path.isdir(ap):
+        return "store: %s \u2014 NOT FOUND (neither a live store nor the committed fixture)" % ap
+    if ap == os.path.abspath(LIVE_STORE):
+        return STORE_LINE_LIVE
+    if ap == os.path.abspath(FIXTURE_STORE) and not explicit:
+        return STORE_LINE_FIXTURE
+    return "store: %s \u2014 pointed by ANNOT_STORE or --store" % ap
+
+# The two commands that CREATE a store, in the order they are run: harvest + project the published
+# view, then stage it. Quoted in the refusal with the store path substituted, because a refusal that
+# does not say what to do next is a dead end wearing a name.
+STORE_CREATE_COMMANDS = (
+    "python3 -m symbiont.loop --sources mgi --since auto --store %s",
+    "python3 -m symbiont.manifest --store %s --entity gene --out manifest.json",
+)
 
 # Sources that CAN answer from the local store, and the sources the surface's shape needs that no
 # harvest has delivered yet. A missing source is named in every response that would have used it —
@@ -123,6 +168,140 @@ TOOLS = tuple(SPECS)
 
 class ToolError(Exception):
     """A caller error the core can name (unknown tool, missing/bad parameter)."""
+
+
+def view_file(store_dir: str) -> str:
+    return os.path.join(store_dir, "view", "%s.v%d.tsv" % (VIEW_NAME, VIEW_VERSION))
+
+
+def provenance_file(store_dir: str) -> str:
+    return os.path.join(store_dir, "view", "%s.v%d.provenance.json" % (VIEW_NAME, VIEW_VERSION))
+
+
+def schema_file(store_dir: str) -> str:
+    return os.path.join(store_dir, "view", "%s.v%d.schema.json" % (VIEW_NAME, VIEW_VERSION))
+
+
+def default_store() -> str:
+    """The store a door reads when nothing is pointed at it (see STORE_CANDIDATES)."""
+    for cand in STORE_CANDIDATES:
+        if os.path.isfile(view_file(cand)):
+            return cand
+    return DEFAULT_STORE
+
+
+class StoreMissing(RuntimeError):
+    """THE STORE IS NOT THERE — a refusal with a name, never a traceback at a door.
+
+    Measured 2026-11-11 on a fresh clone of the public tree: `tools/call gene_dossier` answered
+    `-32603 FileNotFoundError: …/symbiont/store/view/mouse_gene.v1.provenance.json`. Two defects made
+    that possible: the refusal taxonomy had no class for 'the store is not there', and the core-fault
+    handler called provenance() — another store read — from inside its own except block. This class is
+    the missing name; `dispatch()` turns it into REFUSED[store-missing] carrying the path looked for
+    and the two commands that create a store.
+    """
+    code = "store-missing"
+
+    def __init__(self, store: str, looked_for: list):
+        self.store = store
+        self.looked_for = list(looked_for)
+        super().__init__("no store at %s — looked for %s" % (store, ", ".join(self.looked_for)))
+
+
+def store_missing_response(tool: str | None, args: dict | None, exc: StoreMissing) -> dict:
+    """The REFUSED[store-missing] response: the path looked for, and the two commands that build one."""
+    p = exc.store
+    how = [c % p for c in STORE_CREATE_COMMANDS]
+    message = ("REFUSED[store-missing]: no store at %s — looked for %s. A store is created by two "
+               "commands, in this order: (1) %s — harvests the sources and projects the published "
+               "view; then (2) %s — stages that view with its counts, rejects and licence. Nothing "
+               "was read and nothing was written." % (p, " and ".join(exc.looked_for), how[0], how[1]))
+    return {
+        "annot": {"core": CORE, "core_version": CORE_VERSION,
+                  "tool": tool if tool in SPECS else None},
+        "status": "refused",
+        "reason": "store-missing",
+        "query": dict(args or {}),
+        "items": [],
+        "refusal": {
+            "class": "store-missing",
+            "store": p,
+            "looked_for": list(exc.looked_for),
+            "to_create": how,
+            "why_this_class": ("the station's refusals (config · budget · source-gone · "
+                               "licence-unknown · count-mismatch) are raised while FETCHING a "
+                               "source; this one is raised when there is nothing to read at all, "
+                               "so it must be its own class and not be mistaken for a bad request"),
+        },
+        "message": message,
+        "provenance": {"core": CORE, "core_version": CORE_VERSION, "read_only": True,
+                       "store": p, "store_line": store_line(p), "read": False,
+                       "view": None, "sources": {},
+                       "unreachable": [], "rules": {}},
+    }
+
+
+# A view's receipt is REGENERATED, never hand-written: `--rebuild-from-raw` re-derives the view,
+# its schema sidecar and its provenance sidecar from the store's own raw zone, and refuses on the
+# first hash that disagrees with what the store recorded. That is the one command this refusal names.
+VIEW_REGEN_COMMAND = "python3 -m symbiont.loop --rebuild-from-raw --store %s"
+
+
+class ViewUnreceipted(RuntimeError):
+    """THE VIEW IS THERE AND ITS RECEIPT IS NOT — a refusal with a name, never a quiet read.
+
+    req-P1-THE-PUBLISHED-DATASET-TRAVELS-WITH-IT (measured 2026-11-11): the station's own rule is
+    that a view travels with `<stem>.provenance.json` (source · release · fetched_at · licence ·
+    rows · the view's sha256) and `<stem>.schema.json` (the columns). The one published artefact a
+    reviewer could open carried neither — no release id, no fetch date, no hash, no licence line.
+    The door read it anyway, because it only ever asked for the .tsv. This class is that missing
+    refusal: a view whose sidecars are absent is NOT read, and the answer names what is missing and
+    the ONE command that regenerates the receipt from the store's own raw zone.
+    """
+    code = "view-unreceipted"
+
+    def __init__(self, store: str, view: str, missing: list):
+        self.store = store
+        self.view = view
+        self.missing = list(missing)
+        super().__init__("view %s carries no receipt — missing %s" % (view, ", ".join(self.missing)))
+
+
+def view_unreceipted_response(tool: str | None, args: dict | None, exc: ViewUnreceipted) -> dict:
+    """The REFUSED[view-unreceipted] response: the view, the sidecars looked for, the one command."""
+    how = [VIEW_REGEN_COMMAND % exc.store]
+    message = ("REFUSED[view-unreceipted]: the view %s is on disk but its receipt is not — looked for "
+               "%s. A view travels with its provenance sidecar (source · release · fetched_at · "
+               "licence · rows · the view's sha256) and its schema sidecar (the columns); both are "
+               "written by the same publish run that writes the view, so a view without them cannot "
+               "be cited. Regenerate them from this store's own raw zone with: %s. Nothing was read "
+               "and nothing was written."
+               % (exc.view, " and ".join(exc.missing), how[0] if how else "symbiont.loop --rebuild-from-raw"))
+    return {
+        "annot": {"core": CORE, "core_version": CORE_VERSION,
+                  "tool": tool if tool in SPECS else None},
+        "status": "refused",
+        "reason": "view-unreceipted",
+        "query": dict(args or {}),
+        "items": [],
+        "refusal": {
+            "class": "view-unreceipted",
+            "store": exc.store,
+            "view": exc.view,
+            "missing": list(exc.missing),
+            "to_regenerate": how[:1],
+            "why_this_class": ("store-missing means there is no store at all; this is the opposite "
+                               "defect — the data is there and the RECEIPT is gone, so reading it "
+                               "would publish a number nobody could trace. Naming it separately is "
+                               "what makes the missing sidecar visible instead of silently "
+                               "answered around"),
+        },
+        "message": message,
+        "provenance": {"core": CORE, "core_version": CORE_VERSION, "read_only": True,
+                       "store": exc.store, "store_line": store_line(exc.store), "read": False,
+                       "view": None, "sources": {},
+                       "unreachable": [], "rules": {}},
+    }
 
 
 # --------------------------------------------------------------------------------------------------
@@ -254,8 +433,25 @@ def input_schema(tool: str) -> dict:
 # --------------------------------------------------------------------------------------------------
 class Store:
     def __init__(self, path: str | None = None):
-        self.path = os.path.abspath(path or os.environ.get("ANNOT_STORE") or DEFAULT_STORE)
+        self.path = os.path.abspath(path or os.environ.get("ANNOT_STORE") or default_store())
+        self.explicit = bool(path) or bool(os.environ.get("ANNOT_STORE"))
+        self.line = store_line(self.path, self.explicit)
         self._cache: dict = {}
+        # THE FIRST READ OF A STRANGER'S FIRST CALL. Absence is decided ONCE, here, so that no query
+        # can be the place where a missing store is discovered and so that the answer is a refusal
+        # with a name (StoreMissing -> REFUSED[store-missing]) instead of a FileNotFoundError at a door.
+        # A VIEW IS NOT READ UNLESS ITS RECEIPT IS THERE (req-P1-THE-PUBLISHED-DATASET-TRAVELS-WITH-IT):
+        # the .tsv alone is a number nobody can trace, so the two sidecars are part of what 'a view'
+        # means here — provenance.json (source · release · fetched_at · licence · rows · sha256) and
+        # schema.json (the columns). Both, or the door refuses by name.
+        vf, pf, sf = view_file(self.path), provenance_file(self.path), schema_file(self.path)
+        if not os.path.isdir(self.path):
+            raise StoreMissing(self.path, [vf, pf, sf])
+        if not os.path.isfile(vf):
+            raise StoreMissing(self.path, [vf, pf])      # no view at all: the store's own absence
+        missing = [f for f in (pf, sf) if not os.path.isfile(f)]
+        if missing:
+            raise ViewUnreceipted(self.path, vf, missing)
 
     # -- paths -------------------------------------------------------------------------------------
     def p(self, *parts) -> str:
@@ -529,6 +725,7 @@ def provenance(st: Store, unreachable: list[dict] | None = None) -> dict:
         "core_version": CORE_VERSION,
         "read_only": True,
         "store": st.path,
+        "store_line": st.line,          # ONE line: which store answered (see store_line())
         "view": {"name": VIEW_NAME, "version": VIEW_VERSION, "rows": len(st.view_rows),
                  "sha256": view_sha,
                  "sha256_recorded_in_provenance": prov.get("view_sha256"),
@@ -1075,23 +1272,57 @@ QUERIES = {
 # --------------------------------------------------------------------------------------------------
 # dispatch — THE one definition site of the surface
 # --------------------------------------------------------------------------------------------------
+def _unreadable_provenance(st: Store | None, why: str) -> dict:
+    """The provenance of a store that could not be read.
+
+    provenance() itself reads the store (the view provenance sidecar, the view's sha256, the run and
+    state records). A fault raised by a store read is therefore a fault provenance() can raise TOO —
+    which is exactly how a core fault became a traceback on a fresh clone (2026-11-11). So the fault
+    handler asks for provenance through HERE, outside its own except block, and a failed read answers
+    a provenance that SAYS it is unreadable instead of raising again.
+    """
+    try:
+        if st is None:
+            raise RuntimeError("no store reader")
+        return provenance(st, [])
+    except Exception as exc:
+        return {"core": CORE, "core_version": CORE_VERSION, "read_only": True,
+                "store": (st.path if st is not None else None),
+                "store_line": (st.line if st is not None else "store: none \u2014 no store reader"),
+                "read": False,
+                "view": None, "sources": {}, "unreachable": [], "rules": {},
+                "unreadable": "%s: %s" % (type(exc).__name__, exc), "why": why}
+
+
 def answer(tool: str, args: dict | None = None, store_path: str | None = None) -> dict:
     """Return the response OBJECT (for callers that need structure, e.g. an HTML renderer)."""
     a = normalize(tool, args)
-    st = store(store_path)
+    st: Store | None = None
+    result: dict | None = None
+    fault = ""
     try:
+        st = store(store_path)
         result = QUERIES[tool](st, a)
     except ToolError:
         raise
-    except Exception as exc:                      # a core fault is named, never a traceback to a door
+    except StoreMissing:
+        raise                                 # dispatch() owns the store-missing REFUSAL
+    except ViewUnreceipted:
+        raise                                 # dispatch() owns the view-unreceipted REFUSAL
+    except Exception as exc:                  # a core fault is named, never a traceback to a door
+        fault = "%s: %s" % (type(exc).__name__, exc)
+    if result is None:
+        # THE HANDLER BODY LIVES OUT HERE, not inside the except block: nothing in it can re-enter the
+        # store and raise a second exception from inside the handler that claims to prevent exactly
+        # that (measured on a fresh clone, 2026-11-11: provenance() raised FileNotFoundError HERE).
         result = {
             "annot": {"core": CORE, "core_version": CORE_VERSION, "tool": tool},
             "status": "error",
             "reason": "core_fault",
             "query": a,
             "items": [],
-            "message": "%s: %s" % (type(exc).__name__, exc),
-            "provenance": provenance(st, []),
+            "message": fault,
+            "provenance": _unreadable_provenance(st, fault),
         }
     _assert_items(result)
     return result
@@ -1102,6 +1333,13 @@ def dispatch(tool: str, args: dict | None = None, store_path: str | None = None)
     all call THIS and pass the bytes through untouched."""
     try:
         return dumps(answer(tool, args, store_path))
+    except StoreMissing as exc:
+        # the store is not there: a REFUSAL with a class, the path looked for and the two commands
+        # that create one — from every door, because every door calls this function.
+        return dumps(store_missing_response(tool, args, exc))
+    except ViewUnreceipted as exc:
+        # the view is there and its receipt is not: also a REFUSAL with a class, and from every door.
+        return dumps(view_unreceipted_response(tool, args, exc))
     except ToolError as exc:
         return dumps({
             "annot": {"core": CORE, "core_version": CORE_VERSION, "tool": tool if tool in SPECS else None},

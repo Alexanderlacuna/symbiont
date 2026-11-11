@@ -5,8 +5,11 @@
     python3 -m annot call gene_dossier --json '{"gene":"Trp53"}'   the canonical form the MCP uses
     python3 -m annot page --gene Trp53                        door (d): the GN page, as HTML
 
-Exit codes: 0 = a response was produced (status ok, empty, or refused — a refusal names its
-findings, it is not a failure), 2 = usage error.
+Exit codes: 0 = a response was produced (status ok, empty, or a refused answer — a refusal names its
+findings, it is not a failure), 2 = usage error, 3 = THE VIEW CANNOT BE READ: REFUSED[store-missing]
+(there is no store at all, naming the path looked for and the two commands that create one) or
+REFUSED[view-unreceipted] (the view is there and its provenance/schema sidecars are not, naming the
+one command that regenerates them).
 Stdout bytes are exactly core.dispatch()'s bytes — the CLI adds nothing, not even a newline.
 """
 from __future__ import annotations
@@ -25,7 +28,8 @@ def usage(code: int = 2) -> int:
         "  python3 -m annot call <tool> --json '{...}'\n"
         "  python3 -m annot page [--tool TOOL] [--param VALUE ...]\n\n"
         "tools: " + ", ".join(core.TOOLS) + "\n"
-        "global: --store DIR (default $ANNOT_STORE or symbiont/store)\n")
+        "global: --store DIR (default $ANNOT_STORE, else symbiont/store, else the committed\n"
+        "        symbiont/fixtures/store-doors so a fresh clone answers out of the box)\n")
     return code
 
 
@@ -69,11 +73,19 @@ def main(argv: list[str]) -> int:
     if argv and argv[0] == "--tools":
         body = [{"name": t, "purpose": core.SPECS[t]["purpose"], "inputSchema": core.input_schema(t)}
                 for t in core.TOOLS]
-        sys.stdout.buffer.write(core.dumps({
-            "annot": {"core": core.CORE, "core_version": core.CORE_VERSION},
-            "tools": body, "count": len(body),
-            "provenance": core.provenance(core.store()),
-        }))
+        payload = {"annot": {"core": core.CORE, "core_version": core.CORE_VERSION},
+                   "tools": body, "count": len(body)}
+        try:
+            payload["provenance"] = core.provenance(core.store())
+        except core.StoreMissing as exc:
+            # the surface does not need a store; a missing one is NAMED here, never raised
+            payload["refusal"] = {"class": "store-missing", "store": exc.store,
+                                  "looked_for": list(exc.looked_for)}
+        except core.ViewUnreceipted as exc:
+            # the view is on disk and its receipt is not: named here too, never raised
+            payload["refusal"] = {"class": "view-unreceipted", "store": exc.store,
+                                  "view": exc.view, "missing": list(exc.missing)}
+        sys.stdout.buffer.write(core.dumps(payload))
         return 0
 
     cmd, params, store_path = parse(argv)
@@ -92,10 +104,19 @@ def main(argv: list[str]) -> int:
     payload = core.dispatch(tool, params, store_path)
     sys.stdout.buffer.write(payload)
     try:
-        status = json.loads(payload.decode("utf-8")).get("status")
+        obj = json.loads(payload.decode("utf-8"))
     except ValueError:
-        status = "error"
-    return 0 if status in ("ok", "empty", "refused") else 2
+        obj = {}
+    status = obj.get("status")
+    if status in ("ok", "empty"):
+        return 0
+    if status == "refused":
+        # a named refusal is not a failure of the door (exit 0), EXCEPT a view that cannot be read:
+        # no store at all, or a view with no receipt — there is nothing readable to answer from, so
+        # the door exits 3, the code the station's cli already uses for a named refusal, so a script
+        # can tell 'nothing to read' from 'this store answered'.
+        return 3 if obj.get("reason") in ("store-missing", "view-unreceipted") else 0
+    return 2
 
 
 if __name__ == "__main__":

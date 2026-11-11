@@ -5,3 +5,10 @@ __pycache__/
 symbiont/store/
 symbiont/literature/mcp-server/node_modules/
 /tmp/
+# editor + rollback leftovers — untrackable, so a committed backup cannot return
+# (req-P1-THE-PUBLIC-TREE-HAS-NO-DEBRIS-AND-NAM: the same names guix.scm's packaging filter
+#  and `make check`'s hygiene step refuse)
+*.bak-*
+*~
+*.orig
+*.rej

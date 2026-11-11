@@ -72,6 +72,11 @@ definition site an operator reads:
         version: "1.0.0"             # the serverInfo.version the handshake MUST report
         tool_description_sha256: ""  # optional; when set the description hash MUST match, when
                                      # empty it is RECORDED on the first run (pin_state recorded)
+        tools_sha256: ""             # optional; the WHOLE tools/list hash (--print-pin prints
+                                     # it). When set it is the admission-time DRIFT SIGNAL — a
+                                     # changed tool list is REFUSED[schema-drift] and the trial
+                                     # EXPIRED; when empty it is recorded by the first run's trial
+                                     # and compared on every run after it.
       licence_text: "fixture data: no rights claimed"   # what the terms ARE (required)
       licence_url: ""                                   # the page they are stated on (citation)
       budget: {tool_calls: 8, wall_s: 60}               # over it the run REFUSES with the count
@@ -94,15 +99,53 @@ THE TOOL-DESCRIPTION HASH, one definition (an operator can recompute it with --p
 over the tools/list entry for the configured tool. Absent description/inputSchema count as "" and
 {} — never as a wildcard.
 
-SANDBOX (deliverable 4): the allowlist is generated FROM THE ENTRY and enforced in-process by the
-station's own guard (symbiont/sandbox.py :: network_guard, the informative first line the sandbox
-docstring already describes; the kernel tier for a run is the sandbox's job and is quoted per entry
-by --print-policy). For `kind: http` the allowlist is that URL's host and nothing else; for
-`kind: stdio` it is EMPTY — the server is a child process and this adapter opens no socket of its
-own — so any connect attempt inside a stdio run is refused and named as a `sandbox-breach`. The
-licence page is NOT fetched here: this adapter records what the entry STATES (licence_text) and
-cites licence_url; reading a licence page under terms we could not read is the gene arm's T6, and
-this arm refuses an entry whose licence_text is empty rather than pretend it read one.
+SANDBOX (deliverable 4): the allowlist is generated FROM THE ENTRY and, for the trial run, enforced
+in-process by the station's guard (symbiont/sandbox.py :: network_guard, the informative first line
+the sandbox docstring already describes). For `kind: http` the allowlist is that URL's host and
+nothing else; for `kind: stdio` it is EMPTY — the server is a child process and this adapter opens
+no socket of its own — so any connect attempt inside a stdio run is refused and named as a
+`sandbox-breach`. The licence page is NOT fetched here: this adapter records what the entry STATES
+(licence_text) and cites licence_url; reading a licence page under terms we could not read is the
+gene arm's T6, and this arm refuses an entry whose licence_text is empty rather than pretend it read
+one.
+
+THE ROUTINE RUN IS A CONFINED RUN (req-P1-ROUTINE-MCP-RUNS-STAY-CONFINED-AND-T, deliverable 1):
+admission confined the TRIAL, and after admission every harvest ran IN THE STATION'S OWN PROCESS —
+no write confinement, and the python network guard as the only standing control (which is a NAME,
+not a boundary: selftest_sandbox F5a is a raw ctypes connect() that SUCCEEDS with the guard armed).
+So `run_source()` no longer does the work itself: it re-executes THIS module through
+`symbiont/sandbox.py :: run()` — the same confinement the admission trial uses (read-only root, only
+the run's own store + /tmp writable) — and the child, which knows which tier confined it
+(`SYMBIONT_SANDBOX_TIER`), does the work and writes the run record. For a `stdio` entry the child
+also runs inside the KERNEL network rule (TIER-DEFAULT `deny-private`: loopback, RFC1918 and
+link-local denied), so a raw connect() by the server process is refused by nftables and named in the
+run record — the F5b fixture, on the routine path. For an `http` entry the kernel rule is NOT
+installed (the run must reach its own host and a namespace in this deployment has no egress) and the
+record SAYS SO instead of implying a control it does not have. There is no unconfined path: if no
+confinement tier can confine the box the run is REFUSED[unconfined] BY NAME with every tier's
+reason, never run anyway.
+
+THE DRIFT SIGNAL (req-P1-THE-DRIFT-SIGNAL-EXPIRE-THE-TRIAL): an admitted hook must not silently
+become a different program. Three parts, one definition site each:
+
+  (1) AT ADMISSION the sha256 of the server's WHOLE `tools/list` (`tools_list_sha256`, one
+      definition below) and the version the handshake declared are STORED beside the admission
+      record — the `admitted` block of `state/<id>.trial.json` (the state file beside the roster,
+      exactly where `state/<id>.json` keeps `since`). Written once, when the trial is armed, and
+      carried forward untouched by every later run.
+  (2) ON EVERY ROUTINE RUN both are re-read and compared. If EITHER moved the run is
+      REFUSED[schema-drift] naming BOTH hashes, and the trial is marked state=expired — which the
+      RUNNER obeys as a fact, not a word: the next run SKIPS that source BY NAME with the expiry
+      reason, before any child process exists, so an expired source cannot harvest again until it is
+      re-trialled. The way back is an operator's deliberate act: `--retrial` (the confined re-read
+      of tools/list that arms the trial on what the server now offers, zero tool calls), or a new
+      `pin.tools_sha256` in the entry that names exactly what the expired trial saw.
+  (3) THE RUN RECORD carries `tools_hash` and `version` (plus the declared pin), so a run months
+      later can be told apart from the run the admission was made on, without re-reading the
+      server.
+
+The code covers the SHAPE, never the INTENT: a server that keeps this shape and lies is caught by
+the count check and the licence gate, not by a hash.
 
 REFUSALS AND EXIT CODES (a refusal is a legal answer with a reason file; silent acceptance is the
 only forbidden outcome — DESIGN-STATION §6 keeps 7 for schema-drift):
@@ -112,6 +155,7 @@ only forbidden outcome — DESIGN-STATION §6 keeps 7 for schema-drift):
 
 CLI (one definition per operation; the self-test and an operator run the same words):
     python3 -m symbiont.adapters.mcp_source --config F --store S --term T [--source ID[,...]]
+    python3 -m symbiont.adapters.mcp_source --config F --store S --term T --source ID --retrial
     python3 -m symbiont.adapters.mcp_source --config F [--source ID] --print-pin
     python3 -m symbiont.adapters.mcp_source --config F --source ID --print-policy
 """
@@ -122,6 +166,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 
 from .. import contract, sandbox
@@ -144,7 +189,7 @@ TRANSPORT_KEYS = ("kind", "command", "args", "url", "call_timeout_s")
 REQUEST_KEYS = ("tool", "kind", "arguments")
 RESPONSE_KEYS = ("records", "fields", "xrefs", "coords", "optional", "total")
 COUNT_KEYS = ("kind", "pointer", "tool", "arguments")
-PIN_KEYS = ("package", "version", "tool_description_sha256")
+PIN_KEYS = ("package", "version", "tool_description_sha256", "tools_sha256")
 BUDGET_KEYS = ("tool_calls", "wall_s")
 MODES = ("source", "tool")
 TRANSPORTS = ("stdio", "http")
@@ -179,6 +224,11 @@ class ToolError(Refusal):
 class TransportError(Refusal):
     """The transport could not carry the call (no child, no answer in time, an HTTP refusal)."""
     code = "transport"
+
+
+class _RetrialDone(Exception):
+    """Internal control flow, not a refusal: the re-trial gesture (handshake + tools/list, zero
+    tool calls) finished, so there is nothing left to harvest in this run."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -350,6 +400,10 @@ def load_sources(path: str) -> dict:
         h = p["tool_description_sha256"]
         _need(not h or re.fullmatch(r"[0-9a-f]{64}", h),
               f"{where}: pin.tool_description_sha256 must be 64 lowercase hex chars or empty, got {h!r}")
+        ht = p.get("tools_sha256", "")
+        _need(isinstance(ht, str), f"{where}: pin.tools_sha256 must be a string (empty = record it)")
+        _need(not ht or re.fullmatch(r"[0-9a-f]{64}", ht),
+              f"{where}: pin.tools_sha256 must be 64 lowercase hex chars or empty, got {ht!r}")
 
         b = cfg["budget"]
         _need(isinstance(b, dict) and all(k in b for k in BUDGET_KEYS),
@@ -546,6 +600,90 @@ def tool_description_sha256(tool_entry: dict) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def tools_list_sha256(tools: list) -> str:
+    """THE WHOLE `tools/list`, one hash — the DRIFT SIGNAL's subject (deliverable 2).
+
+    A description hash covers ONE tool: a server that quietly ADDS a tool (the fixture in this
+    row's gate gains exactly one) leaves every description untouched and would pass a per-tool
+    pin. So the trial pins the whole list: the tools SORTED BY NAME, each reduced to its
+    `tool_description_sha256` (one definition, above), the digests joined by "\x01" and hashed.
+    Order-independent, additive-sensitive: one added, removed or reshaped tool changes the hash,
+    and nothing else does. An operator gets the value from `--print-pin` (which prints both
+    hashes) and pins it as `pin.tools_sha256`."""
+    parts = []
+    for t in sorted((t for t in (tools or []) if isinstance(t, dict)),
+                    key=lambda t: str(t.get("name", ""))):
+        parts.append(tool_description_sha256(t))
+    return hashlib.sha256("\x01".join(parts).encode("utf-8")).hexdigest()
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# THE TRIAL — what the source's sandbox trial pinned, kept in the run's OWN store so a routine
+# harvest reads it without a network call and without the operator re-pinning anything.
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+TRIAL_SCHEMA = "mcp-trial/1"
+CONFINED_ENV = "SYMBIONT_SANDBOX_TIER"      # set by symbiont/sandbox.py :: run() for the child
+NETWORK_ENV = "SYMBIONT_MCP_NETWORK"        # which network control the child runs under
+NETWORK_WHY_ENV = "SYMBIONT_MCP_NETWORK_WHY"
+
+
+def trial_path(store: str, sid: str) -> str:
+    return os.path.join(store, "state", f"{sid}.trial.json")
+
+
+def trial_read(store: str, sid: str) -> dict:
+    """The trial as the last run left it — EMPTY when there is none (a source whose trial record
+    is absent is un-pinned, not drifted: the first run RECORDS it, exactly as pin_state does)."""
+    try:
+        with open(trial_path(store, sid), encoding="utf-8") as fh:
+            got = json.load(fh)
+        return got if isinstance(got, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def trial_write(store: str, sid: str, trial: dict) -> dict:
+    """Write the trial record and return it (the run record quotes it). "Pinned" is what the next
+    run is compared against: the tools/list hash and the version the trial saw; "admitted" is what
+    the ADMISSION saw (deliverable 1), kept once and carried forward, never rolled by a later run."""
+    rec = dict(trial)
+    rec.update(schema=TRIAL_SCHEMA, source=sid, at=rec.get("at") or _utc())
+    rec.setdefault("pinned", {})
+    os.makedirs(os.path.join(store, "state"), exist_ok=True)
+    p = trial_path(store, sid)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(rec, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, p)
+    return rec
+
+
+def trial_state(trial: dict) -> str:
+    """The trial's state as a NAME the runner can branch on (never a prose warning):
+    "none" (no trial on disk yet) · "admitted" (armed) · "expired" (a moved tools/list or
+    version was seen; the source must be re-trialled before it harvests again)."""
+    if not trial:
+        return "none"
+    return str(trial.get("state") or "none")
+
+
+def expiry_cleared_by_pin(cfg: dict, trial: dict) -> bool:
+    """Is the expiry already answered by the ENTRY? True only when the operator has written a
+    `pin.tools_sha256` (and a version) that name EXACTLY what the expired trial saw — i.e. the
+    operator has looked at the new tools/list (`--print-pin`) and admitted it. Anything else
+    leaves the source skipped: a stale pin, an empty pin and a pin for a THIRD tool list are all
+    'not answered', and answering one by half is how an expiry becomes a word again.
+
+    The other way back is `--retrial` (see MCPSourceAdapter.retrial), which re-reads the
+    tools/list inside the sandbox and arms the trial on what it finds."""
+    seen = dict(trial.get("seen") or {})
+    declared_tools = str((cfg.get("pin") or {}).get("tools_sha256") or "")
+    return bool(declared_tools) \
+        and declared_tools == str(seen.get("tools_sha256") or "") \
+        and str((cfg.get("pin") or {}).get("version") or "") == str(seen.get("version") or "")
+
+
 def network_allowlist(cfg: dict) -> dict:
     """The sandbox allowlist, GENERATED FROM THE ENTRY (deliverable 4).
 
@@ -586,6 +724,10 @@ class MCPSourceAdapter:
         self._count_url = ""
         self.sandbox_refusals: list = []
         self.notes: list[str] = []
+        self.tools_sha = ""            # the tools/list hash this run SAW (the drift subject)
+        self.seen_version = ""         # the serverInfo.version this run's handshake reported
+        self.trial: dict = {}          # the trial this run is checked against (store/state)
+        self.trial_after: dict | None = None   # what the next run is compared against
 
     # -- 0 configure ---------------------------------------------------------------------------
     def configure(self, cfg: dict) -> None:
@@ -610,6 +752,147 @@ class MCPSourceAdapter:
                           f"{hashlib.sha256(self.term.encode()).hexdigest()}")
         if self.cfg["request"]["kind"] == "query":
             self.notes.append(f"query: {self.term}")
+
+    # -- the TRIAL (the drift signal's memory) -------------------------------------------------
+    def set_trial(self, trial: dict | None) -> None:
+        """The trial this run is checked against — read from the run's own store by the caller, so
+        the adapter needs no filesystem of its own to answer "has this server's contract moved"."""
+        self.trial = dict(trial or {})
+
+    def _expire_trial(self, why: str, seen_tools: str, seen_version: str,
+                      pinned: dict | None = None) -> dict:
+        """Mark the trial EXPIRED (the row's own word) and keep BOTH sides of the change, so the
+        next run, the operator and the report all read the same two hashes. `pinned` is the
+        expectation that was violated when it is not the trial's own (an entry that DECLARES its
+        pin at admission has no trial record yet and must still say what it was pinned TO)."""
+        pinned = dict(pinned if pinned is not None else (self.trial.get("pinned") or {}))
+        self.trial_after = dict(
+            state="expired", pinned=pinned, expired_at=_utc(), why=why,
+            # the ADMISSION record is not rolled by a drift: what was admitted stays quoted beside
+            # the expiry, so the operator sees both the baseline and what moved off it.
+            admitted=(self.trial.get("admitted") or None),
+            seen=dict(tools_sha256=seen_tools, version=seen_version,
+                      tools=sorted(str(t.get("name", "?")) for t in (self.client.tools
+                                                                      if self.client else []))))
+        return self.trial_after
+
+    def _check_trial(self, info: dict) -> None:
+        """THE DRIFT SIGNAL — one definition site, before a tool call leaves the box.
+
+        Three states, and each one is a decision, not a warning:
+          expired      the trial was marked expired by an earlier run and NOTHING pins the server's
+                       new tools/list -> REFUSED[schema-drift], because an expired trial must be
+                       re-trialled, not resumed.
+          moved        the tools/list hash (or the version) differs from what the trial pinned
+                       -> REFUSED[schema-drift] naming BOTH hashes, and the trial is EXPIRED.
+          unchanged    nothing to compare yet (first run) or both match -> the trial is ARMED with
+                       what this run saw, so the NEXT run has something to compare against.
+        """
+        declared = str(self.cfg["pin"].get("tools_sha256") or "")
+        pinned = dict(self.trial.get("pinned") or {})
+        want_tools = declared or str(pinned.get("tools_sha256") or "")
+        want_version = str(pinned.get("version") or "") or self.cfg["pin"]["version"]
+        seen_version = str(info.get("version", ""))
+        seen_tools = self.tools_sha
+        names = sorted(str(t.get("name", "?")) for t in (self.client.tools if self.client else []))
+        if self.trial.get("state") == "expired" and not declared:
+            raise SchemaDrift(
+                f"the sandbox trial is EXPIRED (at {self.trial.get('expired_at')}: "
+                f"{self.trial.get('why')}) and nothing pins the server's new tools/list — re-trial "
+                f"it and pin the result (`python3 -m symbiont.adapters.mcp_source --print-pin "
+                f"--config <this entry's config> --source {self.cfg['id']}`) before the next "
+                f"harvest (REFUSED[schema-drift])")
+        moved = []
+        if want_tools and want_tools != seen_tools:
+            moved.append(f"tools/list {want_tools} -> {seen_tools}")
+        if want_version and seen_version and want_version != seen_version:
+            moved.append(f"declared version {want_version} -> serverInfo.version {seen_version}")
+        if moved:
+            self._expire_trial("; ".join(moved), seen_tools, seen_version,
+                               pinned=dict(version=want_version, tools_sha256=want_tools))
+            raise SchemaDrift(
+                f"SCHEMA DRIFT — {'; '.join(moved)}; the sandbox trial is now EXPIRED, so "
+                f"this source must be re-trialled before the next harvest. The pinned tools/list "
+                f"{want_tools or '(nothing pinned yet)'} vs the one this run read {seen_tools} "
+                f"({len(names)} tool(s): {', '.join(names)}) (REFUSED[schema-drift])")
+        self.trial_after = dict(
+            state="admitted", pinned=dict(version=seen_version or want_version,
+                                           tools_sha256=seen_tools),
+            # (1) THE ADMISSION RECORD: the tools/list hash and the declared version as they were
+            # when this source was admitted. Written ONCE (the first run that arms the trial) and
+            # carried forward untouched, so "what did we admit" and "what does it pin now" can
+            # never be the same sentence by accident.
+            admitted=(self.trial.get("admitted")
+                      or dict(at=_utc(), tools_sha256=seen_tools,
+                              version=(seen_version or want_version), by="trial")),
+            at=_utc(), trialled_at=(self.trial.get("trialled_at")
+                                    or (self.trial.get("pinned") and self.trial.get("at")) or _utc()),
+            why=("tools/list and the declared version are unchanged"
+                 if (want_tools or want_version) else "first run: the trial recorded what it saw"),
+            seen=dict(tools_sha256=seen_tools, version=seen_version, tools=names))
+
+    # -- the RE-TRIAL (the only way back from an expiry, on the operator's word) ---------------
+    def retrial_open(self) -> dict:
+        """Connect, handshake, read tools/list — and NOTHING else. The re-trial gesture: it is
+        run inside the same confinement as a harvest (the caller is the confined child), it makes
+        ZERO tool calls, and it exists so the way back from an expiry is a decision with a record
+        rather than an edit that a later run cannot tell from the drift itself."""
+        self.client = client_for(self.cfg["transport"])
+        try:
+            info = self.client.open()
+        except Refusal:
+            raise
+        except Exception as e:
+            raise TransportError(f"handshake failed ({type(e).__name__}: {e})") from e
+        self.tools_sha = tools_list_sha256(self.client.tools)
+        self.seen_version = str(info.get("version", ""))
+        self.retrial(info)
+        return info
+
+    def retrial(self, info: dict) -> dict:
+        """Arm the trial on what the server offers NOW, quoting what it used to be — but only for
+        a TOOL-LIST move. The declared VERSION is an admission fact (`pin.version` in the entry),
+        so a version move is NOT adoptable here: it is REFUSED[schema-drift] naming both versions
+        and the entry must be edited, because 'the server says it is 2.0.0 now' is exactly the
+        claim an operator must sign, not something a re-trial may grant itself."""
+        sid = self.cfg["id"]
+        seen_tools = self.tools_sha
+        seen_version = self.seen_version or str(info.get("version", ""))
+        declared_tools = str(self.cfg["pin"].get("tools_sha256") or "")
+        want_version = str(self.cfg["pin"]["version"])
+        names = sorted(str(t.get("name", "?")) for t in (self.client.tools if self.client else []))
+        if want_version != seen_version:
+            self._expire_trial(f"declared version {want_version} -> serverInfo.version {seen_version}",
+                               seen_tools, seen_version,
+                               pinned=dict(version=want_version, tools_sha256=declared_tools))
+            raise SchemaDrift(
+                f"the version pin did not move with the server: sources.yml pins {want_version} but "
+                f"the handshake reports {seen_version} — a VERSION change is an admission edit "
+                f"(update pin.version in the entry), not something a re-trial may adopt. "
+                f"tools/list {seen_tools} ({len(names)} tool(s): {', '.join(names)}) "
+                f"(REFUSED[schema-drift])")
+        if declared_tools and declared_tools != seen_tools:
+            self._expire_trial(f"the entry declares tools/list {declared_tools} but the server now "
+                               f"reads {seen_tools}", seen_tools, seen_version,
+                               pinned=dict(version=want_version, tools_sha256=declared_tools))
+            raise SchemaDrift(
+                f"the entry declares tools/list {declared_tools} but the server reads {seen_tools} "
+                f"now — re-pin what you are admitting (`--print-pin`) before the re-trial, or the "
+                f"re-trial would adopt a list nobody has looked at (REFUSED[schema-drift])")
+        old = dict(self.trial.get("pinned") or {})
+        self.trial_after = dict(
+            state="admitted",
+            pinned=dict(version=seen_version, tools_sha256=seen_tools),
+            admitted=dict(at=_utc(), tools_sha256=seen_tools, version=seen_version, by="re-trial"),
+            previous=dict(state=trial_state(self.trial),
+                          expired_at=str(self.trial.get("expired_at") or ""),
+                          why=str(self.trial.get("why") or ""),
+                          pinned=old, seen=dict(self.trial.get("seen") or {})),
+            at=_utc(), trialled_at=_utc(),
+            why=(f"re-trialled through the sandbox: tools/list {old.get('tools_sha256', '') or '(none)'} "
+                 f"-> {seen_tools}, version {seen_version} (the operator's --retrial)"),
+            seen=dict(tools_sha256=seen_tools, version=seen_version, tools=names))
+        return self.trial_after
 
     # -- the wire, charged ---------------------------------------------------------------------
     def _charge(self) -> None:
@@ -679,9 +962,17 @@ class MCPSourceAdapter:
             raise
         except Exception as e:
             raise TransportError(f"handshake failed ({type(e).__name__}: {e})") from e
+        # ── THE DRIFT SIGNAL, before ANY tool call (deliverable 2): the whole tools/list hash and
+        # the declared version are what the trial pinned. A moved one refuses BY NAME (both hashes
+        # quoted) and EXPIRES the trial, so the next harvest cannot start without a re-trial.
+        self.tools_sha = tools_list_sha256(self.client.tools)
+        self.seen_version = str(info.get("version", ""))
+        self._check_trial(info)
         tool = self.cfg["request"]["tool"]
         entry = next((t for t in self.client.tools if t.get("name") == tool), None)
         if entry is None:
+            self._expire_trial(f"the tool {tool!r} this entry names is no longer offered",
+                               self.tools_sha, str(info.get("version", "")))
             raise SchemaDrift(f"the server does not offer the tool {tool!r} this entry names — "
                               f"tools/list carries {sorted(t.get('name', '?') for t in self.client.tools)} "
                               f"(REFUSED[schema-drift]: the pin IS the contract)")
@@ -689,14 +980,20 @@ class MCPSourceAdapter:
         pin = dict(package=self.cfg["pin"]["package"], version=self.cfg["pin"]["version"],
                    server_name=info.get("name", ""), server_version=info.get("version", ""),
                    tool=tool, tool_description_sha256=desc_sha,
+                   tools_sha256=self.tools_sha,
                    declared_version=self.cfg["pin"]["version"])
         declared = self.cfg["pin"]["tool_description_sha256"]
         pin["pin_state"] = "checked" if declared else "recorded"
         if info.get("version") != pin["version"]:
+            self._expire_trial(f"declared version {pin['version']} -> serverInfo.version "
+                               f"{info.get('version')}", self.tools_sha,
+                               str(info.get("version", "")))
             raise SchemaDrift(f"pin broken — sources.yml pins {pin['package']}@{pin['version']} "
                               f"but the handshake reports {info.get('name')}@{info.get('version')}; "
                               f"the shape this entry maps is version-specific (REFUSED[schema-drift])")
         if declared and declared != desc_sha:
+            self._expire_trial(f"the declared tool description {declared} -> {desc_sha}",
+                               self.tools_sha, str(info.get("version", "")))
             raise SchemaDrift(f"pin broken — sources.yml pins tool description sha256 {declared} "
                               f"but tools/list for {tool!r} hashes to {desc_sha}; the tool's contract "
                               f"moved (REFUSED[schema-drift])")
@@ -929,16 +1226,179 @@ def _say(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _record_skeleton(cfg: dict, run_id: str, term: str, refusals: list) -> dict:
+    """The run record's fixed part — ONE definition, so the confined outer half and the child that
+    does the work cannot drift apart about what a run record is."""
+    sid = cfg["id"]
+    return dict(schema="mcp-source/1", run_id=run_id, source=sid, mode=cfg["mode"],
+                adapter=NAME, started_at=_utc(), term=term,
+                term_sha256=_sha(term.encode("utf-8")),
+                transport=dict(kind=cfg["transport"]["kind"],
+                               command=cfg["transport"].get("command", ""),
+                               args=list(cfg["transport"].get("args") or []),
+                               url=cfg["transport"].get("url", "")),
+                network=dict(kind="", allowlist=[], note="", refusals=refusals),
+                sandbox_policy=None,
+                licence=dict(text=cfg["licence_text"], url=cfg.get("licence_url") or "",
+                             read="stated by the entry, not fetched (see this module's docstring)"),
+                entry=dict(id=sid, pin=dict(cfg["pin"]), count=dict(cfg["count"]),
+                           request=dict(cfg["request"]), response=dict(cfg["response"])),
+                pin={}, cost={}, notes=[], refusals=[], status="",
+                # (3) THE DRIFT SIGNAL IN THE RECORD: the tools/list hash and the version this run
+                # read, plus the version the entry DECLARES — so a record aged months can answer
+                # "did the contract move under this run?" without connecting to anything.
+                tools_hash="", version="", version_declared=str(cfg["pin"].get("version") or ""))
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# THE ROUTINE RUN IS A CONFINED RUN (req-P1-ROUTINE-MCP-RUNS-STAY-CONFINED-AND-T, deliverable 1)
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+def routine_network_policy(cfg: dict) -> tuple[dict | None, str]:
+    """Which NETWORK control a routine run gets, and why — one definition, quoted in the record.
+
+    stdio  THE KERNEL RULE IS INSTALLED (TIER-DEFAULT `deny-private`): the entry opens no socket of
+           its own and its server is a child process, so loopback, RFC1918 and link-local are all
+           denied by nftables inside the run's own namespace. That is the difference between the
+           guard (which NAMES) and the boundary (which REFUSES): selftest_sandbox F5a is a ctypes
+           raw connect() that the guard does not see at all. F5b, on this path.
+    http   NOT installed, AND SAID SO: the run has to reach its own host, and a network namespace in
+           this deployment holds only `lo` — no egress (symbiont/docs/NETWORK-POLICY-TIERS.md §1,
+           network.egress). Installing the tier would not confine the run, it would refuse every
+           http harvest; claiming the tier without installing it would be the lie this row exists
+           to end. So the record carries kernel=false and this sentence.
+    """
+    if cfg["transport"]["kind"] == "stdio":
+        return (sandbox.netpolicy("deny-private"),
+                "stdio: the kernel rule is installed (TIER-DEFAULT deny-private — loopback, RFC1918 "
+                "and link-local denied), so a raw connect() by the server process is refused by "
+                "nftables, not merely named by the python guard")
+    return (None,
+            "http: the kernel rule is NOT installed — the run must reach its own host and a "
+            "namespace in this deployment has no egress (NETWORK-POLICY-TIERS.md §1); the "
+            "in-process guard names the host, and the kernel half for http runs is the "
+            "deployment's job. Recorded, never implied")
+
+
+def _entry_config(cfg: dict, store: str, run_id: str) -> str:
+    """The ONE-ENTRY config the confined child re-reads, written from the already-validated entry.
+
+    The child must not be handed a cfg dict across a process boundary (that would be a second,
+    unchecked way in), so it re-reads an entry — the SAME bytes the parent validated, so
+    load_sources in the child re-checks the total schema instead of trusting the parent. JSON is
+    YAML, so this needs no writer beyond stdlib json."""
+    p = os.path.join(store, "runs", f"{run_id}.{cfg['id']}.entry.yml")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump(dict(version=1, sources=[cfg]), fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    return p
+
+
+def _confined_run(cfg: dict, store: str, term: str, run_id: str, refresh: bool,
+                  config_path: str | None, retrial: bool = False) -> dict:
+    """The OUTER half: re-run this module inside the confinement tiers, then adopt and annotate the
+    record the confined child wrote. Never runs the harvest here — that is the whole point."""
+    sid = cfg["id"]
+    for sub in ("runs", "state"):
+        os.makedirs(os.path.join(store, sub), exist_ok=True)
+    refusals: list = []
+    inner_cfg = _entry_config(cfg, store, run_id)
+    net, net_why = routine_network_policy(cfg)
+    inner = [sys.executable, "-m", "symbiont.adapters.mcp_source",
+             "--config", inner_cfg, "--store", store, "--term", term, "--source", sid,
+             "--run-id", run_id] + (["--refresh"] if refresh else []) + (["--retrial"] if retrial else [])
+    _say(f"CONFINE-IN {sid}  store={store}  entry={os.path.relpath(inner_cfg, store)}"
+         f"  network={net['tier'] if net else 'not-installed'}")
+    try:
+        srec = sandbox.run(inner, class_name="adapter", row_paths=[store], cwd=FARM,
+                           label=f"mcp-{sid}", capture_stdout=True, network=net,
+                           runs_dir=os.path.join(store, "runs"),
+                           extra_env={NETWORK_ENV: net["tier"] if net else "not-installed",
+                                      NETWORK_WHY_ENV: net_why})
+    except sandbox.SandboxRefused as e:
+        rec = _record_skeleton(cfg, run_id, term, refusals)
+        rec["refusals"].append(dict(code="unconfined", detail=str(e)))
+        rec["status"], rec["code"], rec["exit_code"] = "REFUSED", "unconfined", 2
+        rec["finished_at"], rec["cost"] = _utc(), dict(tool_calls=0, wall_s=0.0, bytes_out=0)
+        p = _jdump(rec, os.path.join(store, "runs", f"{run_id}.{sid}.json"))
+        _say(f"REFUSED[unconfined] {sid}: {e}")
+        _say(f"RUN-RECORD {os.path.relpath(p, store)}  status=REFUSED  code=unconfined")
+        return rec
+    out = srec.get("stdout") or ""
+    if out:
+        sys.stdout.write(out if out.endswith("\n") else out + "\n")
+    rec_path = os.path.join(store, "runs", f"{run_id}.{sid}.json")
+    try:
+        with open(rec_path, encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError):
+        rec = _record_skeleton(cfg, run_id, term, refusals)
+        rec["refusals"].append(dict(
+            code="error", detail=f"the confined child (exit {srec['exit']}) wrote no run record at "
+                                  f"{os.path.relpath(rec_path, store)} — a run nobody can audit is "
+                                  f"not a run; stderr tail: {(srec.get('stderr_tail') or [])}"))
+        rec["status"], rec["code"] = "REFUSED", "error"
+    # ── THE CONFINEMENT, as the OUTER half measured it (the child's own tier is the same one: it
+    # was resolved once, and handed to the child as SYMBIONT_SANDBOX_TIER).
+    conf = dict(rec.get("confine") or {})
+    conf.update(tier=srec["tier"],
+                sandbox=dict(tier=srec["tier"], record=srec.get("record") or "",
+                             allowlist=srec.get("allowlist") or [], wall_s=srec.get("wall_s"),
+                             network_tier=(srec.get("network") or {}).get("tier"),
+                             tier_tried=srec.get("tier_tried") or {},
+                             kernel_findings=[f for f in (srec.get("findings") or [])]))
+    if conf.get("tier") and rec.get("confine", {}).get("tier") not in ("", None, srec["tier"]):
+        conf["disagreement"] = (f"the child recorded tier={rec['confine'].get('tier')} but the "
+                                f"sandbox ran it under tier={srec['tier']}")
+    rec["confine"] = conf
+    exit_code = srec["exit"]
+    if srec.get("breach"):
+        rec["status"], rec["code"], exit_code = "REFUSED", "sandbox-breach", sandbox.BREACH_EXIT
+        rec["refusals"] = list(rec.get("refusals") or []) + [dict(
+            code="sandbox-breach",
+            detail="the confined harvest was refused a write or a connect outside its allowlist "
+                   f"({len(srec.get('findings') or [])} finding(s), named in the sandbox record)")]
+    rec["exit_code"] = exit_code
+    rec["finished_at"] = rec.get("finished_at") or _utc()
+    p = _jdump(rec, rec_path)
+    _say(f"CONFINE   {sid}  tier={srec['tier']}  tools_hash={conf.get('tools_hash', '') or '—'}"
+         f"  network={(conf.get('network') or {}).get('tier') or 'not-installed'}"
+         f"  exit={exit_code}")
+    _say(f"RUN-RECORD {os.path.relpath(p, store)}  status={rec['status']}"
+         + (f"  code={rec['code']}" if rec.get("code") else ""))
+    return rec
+
+
 def run_source(cfg: dict, store: str, term: str, run_id: str | None = None,
-               refresh: bool = False) -> dict:
+               refresh: bool = False, config_path: str | None = None,
+               retrial: bool = False) -> dict:
     """discover -> fetch(since) -> snapshot -> normalise -> verify, for ONE MCP source.
+
+    Every refusal is a Refusal (contract.Refusal subclass) with a CODE; the run record is written
+    even when the run refuses (a refusal is a legal answer WITH a reason file). The source's state
+    file is written only after verify(), so a refused source never advances `since`.
+
+    AND the run is CONFINED (req-P1-ROUTINE-MCP-RUNS-STAY-CONFINED-AND-T): the process that does
+    the work is the child of `symbiont/sandbox.py :: run()`, which knows its tier. A run that
+    arrives here WITHOUT a tier is therefore the outer half — it re-executes itself inside one
+    instead of harvesting in the station's own process. `config_path` is kept for the caller's
+    information (the child re-reads the entry the parent validated, see `_entry_config`)."""
+    run_id = run_id or _utc().replace(":", "").replace("-", "")
+    tier = os.environ.get(CONFINED_ENV, "")
+    if not tier:
+        return _confined_run(cfg, store, term, run_id, refresh, config_path, retrial=retrial)
+    return _run_in_tier(cfg, store, term, run_id, refresh, tier, retrial=retrial)
+
+
+def _run_in_tier(cfg: dict, store: str, term: str, run_id: str, refresh: bool,
+                 tier: str, retrial: bool = False) -> dict:
+    """The INNER half: the harvest itself, in the process the confinement tier started.
 
     Every refusal is a Refusal (contract.Refusal subclass) with a CODE; the run record is written
     even when the run refuses (a refusal is a legal answer WITH a reason file). The source's state
     file is written only after verify(), so a refused source never advances `since`.
     """
     sid = cfg["id"]
-    run_id = run_id or _utc().replace(":", "").replace("-", "")
     for sub in ("runs", "state", "raw", "records"):
         os.makedirs(os.path.join(store, sub), exist_ok=True)
     state_path = os.path.join(store, "state", f"{sid}.json")
@@ -948,21 +1408,11 @@ def run_source(cfg: dict, store: str, term: str, run_id: str | None = None,
             since = json.load(fh)
 
     refusals: list = []
-    rec: dict = dict(schema="mcp-source/1", run_id=run_id, source=sid, mode=cfg["mode"],
-                     adapter=NAME, started_at=_utc(), term=term,
-                     term_sha256=_sha(term.encode("utf-8")),
-                     transport=dict(kind=cfg["transport"]["kind"],
-                                    command=cfg["transport"].get("command", ""),
-                                    args=list(cfg["transport"].get("args") or []),
-                                    url=cfg["transport"].get("url", "")),
-                     network=dict(kind="", allowlist=[], note="", refusals=refusals),
-                     sandbox_policy=None,
-                     licence=dict(text=cfg["licence_text"], url=cfg.get("licence_url") or "",
-                                  read="stated by the entry, not fetched (see this module's docstring)"),
-                     entry=dict(id=sid, pin=dict(cfg["pin"]), count=dict(cfg["count"]),
-                                request=dict(cfg["request"]), response=dict(cfg["response"])),
-                     pin={}, cost={}, notes=[], refusals=[], status="")
+    rec: dict = _record_skeleton(cfg, run_id, term, refusals)
     ad = MCPSourceAdapter()
+    ad.set_trial(trial_read(store, sid))
+    net_tier = os.environ.get(NETWORK_ENV, "not-installed")
+    net_why = os.environ.get(NETWORK_WHY_ENV, "")
     code, exit_code = "", 0
     try:
         ad.configure(cfg)                       # THE COUNT RULE refuses here, by name, before any wire
@@ -973,6 +1423,18 @@ def run_source(cfg: dict, store: str, term: str, run_id: str | None = None,
         rec["notes"] = list(ad.notes)
         with sandbox.network_guard(set(allow["hosts"]), refusals=refusals):
             ad.set_term(term)
+            if retrial:
+                # ── THE RE-TRIAL, in the SAME confinement as a harvest: read the handshake and the
+                # whole tools/list, arm the trial on what the server offers now, and STOP. No tool
+                # call, no snapshot, no record — so the way back from an expiry cannot become a
+                # harvest with extra steps.
+                ad.retrial_open()
+                rec["retrial"] = dict(tools_hash=ad.tools_sha, version=ad.seen_version,
+                                      previous=(ad.trial_after or {}).get("previous") or {})
+                rec["status"] = "RE-TRIAL"
+                _say(f"RE-TRIAL {sid}  tools_hash={ad.tools_sha}  version={ad.seen_version}  "
+                     f"zero tool calls (the next run harvests against this trial)")
+                raise _RetrialDone()
             d = ad.discover(None, since)
             rec["discover"] = dict(release=d.release, published_count=d.published_count,
                                    published_count_url=d.published_count_url,
@@ -1060,6 +1522,8 @@ def run_source(cfg: dict, store: str, term: str, run_id: str | None = None,
                             licence=d.licence),
                        state_path)
                 rec["status"] = "PUBLISHED" if cfg["mode"] == "source" else "TOOL-CALL"
+    except _RetrialDone:
+        pass                                    # the re-trial gesture finished; nothing to harvest
     except Refusal as e:
         code, rec["status"] = e.code, "REFUSED"
         rec["refusals"].append(dict(code=e.code, detail=str(e)))
@@ -1084,9 +1548,34 @@ def run_source(cfg: dict, store: str, term: str, run_id: str | None = None,
         rec["finished_at"] = _utc()
         rec["code"] = code
         rec["exit_code"] = exit_code
+        # (3) the run record's own drift pair — the tools/list hash and the version this run READ
+        # (the skeleton's is the version the entry DECLARES, so both sides are always on disk).
+        rec["tools_hash"] = ad.tools_sha
+        rec["version"] = ad.seen_version or str(cfg["pin"].get("version") or "")
+        # ── WHICH TIER CONFINED THIS RUN, AND THE tools/list IT SAW (deliverable 3). The tier is
+        # read from the environment the sandbox handed this child — never guessed, and never the
+        # word "none" unless a run really arrived unconﬁned (which run_source makes impossible).
+        rec["confine"] = dict(tier=tier or "none",
+                              tools_hash=(ad.tools_sha or (ad.pin or {}).get("tools_sha256", "")),
+                              network=dict(kernel=(net_tier != "not-installed"),
+                                           tier=net_tier, why=net_why)
+                              if net_tier else dict(kernel=False, tier="not-installed", why=""),)
+        # ── THE TRIAL: what the NEXT run is compared against (expired on drift, armed otherwise).
+        # Written even when the run refused, because an expiry that only happens on success would
+        # expire nothing at all.
+        if ad.trial_after:
+            rec["trial"] = trial_write(store, sid, ad.trial_after)
+            _say(f"TRIAL    {sid}  state={rec['trial']['state']}  "
+                 f"pinned_tools={rec['trial']['pinned'].get('tools_sha256', '') or '—'}  "
+                 f"seen_tools={rec['confine']['tools_hash'] or '—'}  "
+                 f"why={rec['trial'].get('why', '')}")
         pretty = _jdump(rec, os.path.join(store, "runs", f"{run_id}.{sid}.json"))
         _say(f"RUN-RECORD {os.path.relpath(pretty, store)}  status={rec['status']}"
              + (f"  code={code}" if code else ""))
+        _say(f"CONFINE   {sid}  tier={rec['confine']['tier']}  "
+             f"tools_hash={rec['confine']['tools_hash'] or '—'}  "
+             f"network={rec['confine']['network']['tier']}"
+             + ("  (kernel rule installed)" if rec["confine"]["network"]["kernel"] else ""))
         _say(f"COST     {sid}  tool_calls={rec['cost']['tool_calls']} "
              f"wall={rec['cost']['wall_s']}s")
         if refusals:
@@ -1095,9 +1584,58 @@ def run_source(cfg: dict, store: str, term: str, run_id: str | None = None,
     return rec
 
 
+def _unique_record_path(store: str, run_id: str, sid: str, tag: str) -> str:
+    """A skip record must never overwrite another run's record. Run ids have one-second
+    resolution, so two invocations inside the same second would otherwise share a file name and
+    the second would silently erase the first (measured while collecting this row's evidence: a
+    skip record was overwritten by the re-trial that followed it)."""
+    p = os.path.join(store, "runs", f"{run_id}.{sid}.json")
+    n = 1
+    while os.path.exists(p):
+        p = os.path.join(store, "runs", f"{run_id}-{tag}{n}.{sid}.json")
+        n += 1
+    return p
+
+
+def _skip_record(cfg: dict, store: str, term: str, run_id: str | None, trial: dict) -> dict:
+    """THE EXPIRY, ENFORCED AS A SKIP (deliverable 2, second half): a source whose trial is
+    expired is not run, not spawned, not asked — it is SKIPPED BY NAME with the reason the expiry
+    wrote, and the skip leaves a record of its own so 'it did not harvest' is a fact on disk and
+    not an absence somebody has to notice.
+
+    No child process exists for a skipped source: the branch is in the runner, above the sandbox.
+    """
+    sid = cfg["id"]
+    run_id = run_id or _utc().replace(":", "").replace("-", "")
+    seen = dict(trial.get("seen") or {})
+    reason = (f"trial-expired at {trial.get('expired_at')}: {trial.get('why')} — the tool list or "
+              f"the version moved since admission, so this source must be re-trialled before it "
+              f"harvests again")
+    rec = _record_skeleton(cfg, run_id, term, [])
+    rec.update(status="SKIPPED", code="trial-expired", exit_code=0, finished_at=_utc(),
+               tools_hash=str(seen.get("tools_sha256") or ""),
+               version=str(seen.get("version") or ""),
+               trial=dict(trial), skip=dict(reason=reason, since=str(trial.get("expired_at") or "")),
+               cost=dict(tool_calls=0, wall_s=0.0, bytes_out=0),
+               confine=dict(tier="not-run", tools_hash=str(seen.get("tools_sha256") or ""),
+                            network=dict(kernel=False, tier="not-run",
+                                         why="skipped before any child process existed")))
+    p = _jdump(rec, _unique_record_path(store, run_id, sid, "skip"))
+    _say(f"SKIP     {sid}  reason=trial-expired  since={rec['skip']['since']}  "
+         f"why={trial.get('why')}  (re-trial it: --source {sid} --retrial, or pin what you admit)")
+    _say(f"RUN-RECORD {os.path.relpath(p, store)}  status=SKIPPED  code=trial-expired")
+    return rec
+
+
 def load_and_run(config_path: str, store: str, term: str, only: list[str] | None = None,
-                 run_id: str | None = None, refresh: bool = False) -> tuple[dict, int]:
-    """Every enabled entry (or `only`), in id order. Returns (records by id, worst exit code)."""
+                 run_id: str | None = None, refresh: bool = False,
+                 retrial: bool = False) -> tuple[dict, int]:
+    """Every enabled entry (or `only`), in id order. Returns (records by id, worst exit code).
+
+    TWO ways a source does not run, and they are not the same word: `enabled: false` is the
+    operator's off switch (a skip, no record — nothing was expected of it), and a TRIAL-EXPIRED
+    state is the drift signal's verdict (a skip WITH a record and the reason, because a harvest
+    WAS expected and the source is the thing that changed)."""
     sources = load_sources(config_path)
     if only:
         missing = [s for s in only if s not in sources]
@@ -1111,7 +1649,14 @@ def load_and_run(config_path: str, store: str, term: str, only: list[str] | None
         if not cfg["enabled"]:
             _say(f"SKIP     {sid}  reason=disabled (enabled: false)")
             continue
-        rec = run_source(cfg, store, term, run_id=run_id, refresh=refresh)
+        trial = trial_read(store, sid)
+        if trial_state(trial) == "expired" and not retrial and not expiry_cleared_by_pin(cfg, trial):
+            rec = _skip_record(cfg, store, term, run_id, trial)
+            out[sid] = rec
+            worst = max(worst, rec["exit_code"])
+            continue
+        rec = run_source(cfg, store, term, run_id=run_id, refresh=refresh,
+                         config_path=config_path, retrial=retrial)
         out[sid] = rec
         worst = max(worst, rec["exit_code"])
     if not out:
@@ -1142,8 +1687,14 @@ def print_pin(cfg: dict) -> int:
                              server_version=info.get("version", ""),
                              tools=sorted(t.get("name", "?") for t in ad.client.tools),
                              tool=tool, tool_description_sha256=sha,
+                             # THE DRIFT SIGNAL's other half (req-P1-ROUTINE-MCP-RUNS-STAY-
+                             # CONFINED-AND-T): the whole tools/list, hashed — this is the value
+                             # an operator pins as pin.tools_sha256 to make a moved tool list a
+                             # REFUSED[schema-drift] instead of a quiet addition.
+                             tools_sha256=tools_list_sha256(ad.client.tools),
                              pin_matches_declared_version=(info.get("version") == cfg["pin"]["version"]),
-                             declared_tool_description_sha256=cfg["pin"]["tool_description_sha256"]),
+                             declared_tool_description_sha256=cfg["pin"]["tool_description_sha256"],
+                             declared_tools_sha256=cfg["pin"].get("tools_sha256", "")),
                         indent=1, sort_keys=True))
         return 0
     except Refusal as e:
@@ -1163,6 +1714,9 @@ def main(argv=None) -> int:
     ap.add_argument("--run-id", default=None)
     ap.add_argument("--refresh", action="store_true", help="fetch even when the release has not moved")
     ap.add_argument("--print-pin", action="store_true", help="print the server's pin (version + tool hash)")
+    ap.add_argument("--retrial", action="store_true",
+                    help="re-trial ONE expired source through the sandbox: re-read tools/list and "
+                         "version, arm the trial, make zero tool calls (the way back from a drift)")
     ap.add_argument("--print-policy", action="store_true", help="print the network allowlist from the entry")
     a = ap.parse_args(argv)
 
@@ -1199,8 +1753,28 @@ def main(argv=None) -> int:
         _say("REFUSED[config] --store is required: this arm writes a run record, and a run with "
              "nowhere to write it is a run nobody can audit")
         return 2
+    if a.retrial:
+        # A re-trial is ONE operator act on ONE named source, and only where an expiry exists: a
+        # re-trial of a healthy source would silently re-baseline the drift signal, which is the
+        # thing this whole mechanism exists to prevent.
+        if len(ids) != 1:
+            _say("REFUSED[config] --retrial needs exactly ONE --source: a re-trial is an operator's "
+                 "decision about a named server, never a run over a roster")
+            return 2
+        sid = ids[0]
+        tr = trial_read(a.store, sid)
+        if trial_state(tr) != "expired":
+            _say(f"REFUSED[config] {sid}: its trial is state={trial_state(tr)!r}, not 'expired' — "
+                 f"there is nothing to re-trial, and re-arming a healthy trial would erase the "
+                 f"baseline the drift signal compares against")
+            return 2
+        if not os.environ.get(CONFINED_ENV):
+            # the OUTER half prints the operator's line once; the confined child re-validates the
+            # same expiry on disk and must not print it again as if it were a second decision
+            _say(f"RETRIAL  {sid}  expired_at={tr.get('expired_at')}  why={tr.get('why')}")
     try:
-        _, worst = load_and_run(a.config, a.store, a.term, ids, run_id=a.run_id, refresh=a.refresh)
+        _, worst = load_and_run(a.config, a.store, a.term, ids, run_id=a.run_id, refresh=a.refresh,
+                                retrial=a.retrial)
     except contract.ConfigError as e:
         _say(f"REFUSED[{e.code}] {e}")
         return 2

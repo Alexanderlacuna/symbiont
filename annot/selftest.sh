@@ -13,6 +13,17 @@
 #   6 NO-STORE-WRITE  the store under test (live or fixture) is byte- and mtime-identical before/after
 # plus (req-P1-CITATION-REQUIRED-AT-THE-DOSSIER-DOOR):
 #   G ANSWER      the opt-in answer mode: three fixtures + one real answer from tonight's store
+# plus (req-P0-A-CLONE-DOOR-MUST-SAY-STORE-MISSING):
+#   H NO-STORE    a store that is not there is REFUSED[store-missing] (path + the two creating
+#                 commands, exit 3), never a traceback — run with ANNOT_STORE UNSET (a clone with
+#                 only the committed fixture store, and a tree with no store at all) and with it
+#                 pointed at a path that does not exist; plus a fault injected into the core, which
+#                 must come back reason=core_fault even when it breaks provenance()'s own read
+# plus (req-P1-THE-PUBLISHED-DATASET-TRAVELS-WITH-IT):
+#   H6 RECEIPT    a view stripped of its sidecars (both, or the schema alone) is REFUSED
+#                 [view-unreceipted] — 0 items, exit 3, the missing sidecar and the regenerating
+#                 command named, the .tsv untouched — while the same store WITH its sidecars answers;
+#                 and harvester-view/ (when present) carries a receipt that agrees with its tsv
 set -u
 export PYTHONDONTWRITEBYTECODE=1   # the core writes no .pyc into the farm either
 FARM=$(cd "$(dirname "$0")/.." && pwd)
@@ -274,6 +285,255 @@ for tool, args in (("gene_dossier", '{"gene": "Trp53"}'), ("gene_xref", '{"gene"
 sys.exit(rc)
 PY
 [ $? -eq 0 ] && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
+
+echo "== H · A MISSING STORE IS NAMED, NEVER A TRACEBACK (the clone's first call) =="
+# req-P0-A-CLONE-DOOR-MUST-SAY-STORE-MISSING (measured 2026-11-11 by an external critique of the
+# public tree): the harvested store symbiont/store is WITHHELD from the public tree, so a fresh clone
+# has none where the docs point — and `tools/call gene_dossier` answered
+# `-32603 FileNotFoundError: … symbiont/store/view/mouse_gene.v1.provenance.json`. This suite could not
+# see it: every section above runs with ANNOT_STORE exported to a store that exists, and the EMPTY
+# check tests a GENE with no record, never a STORE with no files. The five cases below all run with
+# ANNOT_STORE unset or pointed at a path that does not exist.
+CLONE="$T/clone"
+mkdir -p "$CLONE/annot" "$CLONE/symbiont/fixtures" \
+  && cp "$FARM"/annot/*.py "$CLONE/annot/" \
+  && cp -a "$FIXTURE_STORE" "$CLONE/symbiont/fixtures/store-doors" \
+  && ok "H0 built a clone fixture: the shipped package + the committed fixture store, no live store" \
+  || no "H0 cannot build the clone fixture under $CLONE"
+has_tr(){ grep -qE 'Traceback \(most recent call last\)' "$1"; }   # a traceback on a door's stderr?
+
+# H1 — ANNOT_STORE UNSET in that clone: a REAL DOSSIER from the committed fixture store.
+# req-P1-A-CLONE-ANSWERS-OUT-OF-THE-BOX-THE-DEF (measured 2026-11-11): every section above exports
+# ANNOT_STORE to a store this script chose, so the DEFAULT path — the one a stranger's first call
+# takes — was never exercised; the suite's 21/21 said nothing about it. This case runs with the
+# variable UNSET and asserts four things: status ok, a non-empty dossier whose every item carries
+# source/release/accession (+ fetched_at/sha256), provenance intact against the view's own hash, and
+# the ONE line saying which store answered: 'store: fixtures/store-doors — no live store found'.
+FIXTURE_LINE="store: fixtures/store-doors — no live store found"
+LIVE_LINE="store: symbiont/store — the live store"
+( cd "$CLONE" && env -u ANNOT_STORE python3 -m annot call gene_dossier --json '{"gene":"Trp53"}' ) \
+  >"$T/h1.json" 2>"$T/h1.err"
+H1_RC=$?
+H1=$(python3 - "$T/h1.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+p = d.get("provenance") or {}
+v = p.get("view") or {}
+items = []
+def walk(o):
+    if isinstance(o, dict):
+        if "value" in o and "accession" in o:
+            items.append(o)
+        for x in o.values():
+            walk(x)
+    elif isinstance(o, list):
+        for x in o:
+            walk(x)
+walk(d.get("sections") or {})
+bad = [i for i in items if not (i.get("source") and i.get("release") and i.get("accession")
+                                and i.get("fetched_at") and i.get("sha256"))]
+print("%s|%s|%s|%s|%s|%d|%d" % (d.get("status"), p.get("store"), v.get("rows"), v.get("intact"),
+                                 p.get("store_line"), len(items), len(bad)))
+PY
+)
+IFS='|' read -r H1_ST H1_STORE H1_ROWS H1_INTACT H1_LINE H1_N H1_BAD <<<"$H1"
+if [ "$H1_RC" = 0 ] && [ "$H1_ST" = "ok" ] \
+   && [ "$H1_STORE" = "$CLONE/symbiont/fixtures/store-doors" ] && [ "$H1_INTACT" = "True" ] \
+   && [ "$H1_LINE" = "$FIXTURE_LINE" ] && [ -n "$H1_N" ] && [ "$H1_N" -gt 0 ] && [ "$H1_BAD" = "0" ] \
+   && ! has_tr "$T/h1.err"; then
+  ok "H1 ANNOT_STORE unset, no live store: a REAL dossier from the committed fixture — $H1_N items each with source/release/accession, view $H1_ROWS rows intact, and the line '$H1_LINE'"
+else
+  no "H1 a clone's first call did not answer from the fixture with provenance (exit=$H1_RC, got '$H1', stderr $(head -c 160 "$T/h1.err"))"
+fi
+
+# H1b — THE SAME CALL WITH A REAL STORE PRESENT PREFERS IT (quoted): the clone is given the store the
+# docs point at, ANNOT_STORE stays unset, and the answer must come from symbiont/store — never from the
+# fixture, which is still on disk next to it.
+CLONE_LIVE="$T/clone-live"
+mkdir -p "$CLONE_LIVE/annot" "$CLONE_LIVE/symbiont" \
+  && cp "$FARM"/annot/*.py "$CLONE_LIVE/annot/" \
+  && cp -a "$FIXTURE_STORE" "$CLONE_LIVE/symbiont/store" \
+  && mkdir -p "$CLONE_LIVE/symbiont/fixtures" \
+  && cp -a "$FIXTURE_STORE" "$CLONE_LIVE/symbiont/fixtures/store-doors" \
+  || no "H1b cannot build the clone-with-a-live-store fixture under $CLONE_LIVE"
+( cd "$CLONE_LIVE" && env -u ANNOT_STORE python3 -m annot call gene_dossier --json '{"gene":"Trp53"}' ) \
+  >"$T/h1b.json" 2>"$T/h1b.err"
+H1B_RC=$?
+H1B=$(python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]));p=d.get("provenance") or {}
+print("%s|%s|%s" % (d.get("status"), p.get("store"), p.get("store_line")))' "$T/h1b.json" 2>/dev/null)
+[ "$H1B_RC" = 0 ] && [ "$H1B" = "ok|$CLONE_LIVE/symbiont/store|$LIVE_LINE" ] && ! has_tr "$T/h1b.err" \
+  && ok "H1b ANNOT_STORE unset with a live store present: the same call PREFERS it — store $CLONE_LIVE/symbiont/store, line '$LIVE_LINE' (the fixture is still on disk and was not read)" \
+  || no "H1b a live store present was not preferred (exit=$H1B_RC, got '$H1B', expected ok|$CLONE_LIVE/symbiont/store|$LIVE_LINE)"
+
+# H2 — the SAME clone at the MCP door: `tools/call gene_dossier` is the call the row measured
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"gene_dossier","arguments":{"gene":"Trp53"}}}' \
+  | ( cd "$CLONE" && env -u ANNOT_STORE python3 -m annot.mcp_server ) >"$T/h2.jsonl" 2>"$T/h2.err"
+H2=$(python3 -c 'import json,sys
+msgs=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+r=[m for m in msgs if m.get("id")==2][0]
+if "error" in r: print("JSONRPC-ERROR|%s" % (r.get("error") or {}).get("code")); raise SystemExit
+b=json.loads(r["result"]["content"][0]["text"])
+print("%s|%s|%s" % (b.get("status"), r["result"].get("isError"),
+                    (b.get("provenance") or {}).get("store_line")))' \
+  "$T/h2.jsonl" 2>/dev/null)
+[ "$H2" = "ok|False|$FIXTURE_LINE" ] && ! has_tr "$T/h2.err" \
+  && ok "H2 tools/call gene_dossier in the same clone: no JSON-RPC error, status=ok (isError=False), provenance.store_line='$FIXTURE_LINE' — the call that used to be -32603 FileNotFoundError" \
+  || no "H2 the MCP door at a clone answered '$H2' (expected ok|False|$FIXTURE_LINE); stderr $(head -c 160 "$T/h2.err")"
+
+# H3 — ANNOT_STORE POINTED AT A PATH THAT DOES NOT EXIST: REFUSED[store-missing], that path named, exit 3
+MISSING="$T/no-store-here"
+env ANNOT_STORE="$MISSING" python3 -m annot call gene_dossier --json '{"gene":"Trp53"}' \
+  >"$T/h3.json" 2>"$T/h3.err"
+H3_RC=$?
+H3=$(python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+m=d.get("message") or ""
+print("%s|%s|%s|%s|%s" % (d.get("status"), d.get("reason"), "REFUSED[store-missing]" in m,
+                          sys.argv[2] in m, ("symbiont.loop" in m and "symbiont.manifest" in m)))' \
+  "$T/h3.json" "$MISSING" 2>/dev/null)
+[ "$H3_RC" = 3 ] && [ "$H3" = "refused|store-missing|True|True|True" ] && ! has_tr "$T/h3.err" \
+  && ok "H3 ANNOT_STORE=$MISSING: status=refused reason=store-missing, exit 3, the path and the two creating commands (loop, then manifest) named, no traceback" \
+  || no "H3 a pointed-but-absent store gave exit=$H3_RC, '$H3' (expected refused|store-missing|True|True|True); stderr $(head -c 160 "$T/h3.err")"
+
+# H4 — ANNOT_STORE UNSET WITH **NO STORE ANYWHERE** (no live store, no committed fixture): the same
+# refusal, naming the DEFAULT path the docs tell a stranger to create. This is the case the row asked
+# for — the suite finally exercises the default path rather than a store this script exported.
+BARE="$T/bare"
+mkdir -p "$BARE/annot" && cp "$FARM"/annot/*.py "$BARE/annot/"
+( cd "$BARE" && env -u ANNOT_STORE python3 -m annot call gene_dossier --json '{"gene":"Trp53"}' ) \
+  >"$T/h4.json" 2>"$T/h4.err"
+H4_RC=$?
+H4=$(python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+m=d.get("message") or ""
+print("%s|%s|%s|%s" % (d.get("status"), d.get("reason"), "REFUSED[store-missing]" in m,
+                       sys.argv[2] in m))' "$T/h4.json" "$BARE/symbiont/store" 2>/dev/null)
+[ "$H4_RC" = 3 ] && [ "$H4" = "refused|store-missing|True|True" ] && ! has_tr "$T/h4.err" \
+  && ok "H4 ANNOT_STORE unset and NO store anywhere: REFUSED[store-missing] naming the default $BARE/symbiont/store, exit 3, no traceback" \
+  || no "H4 the unset-store case gave exit=$H4_RC, '$H4' (expected refused|store-missing|True|True); stderr $(head -c 160 "$T/h4.err")"
+
+# H5 — A FAULT INJECTED INTO THE CORE: reason=core_fault and NOTHING ESCAPES, including when the fault
+# also breaks the store read provenance() performs (that is the 2026-11-11 double traceback: the handler
+# called provenance() from inside its own except block and re-raised from there).
+( cd "$CLONE" && env -u ANNOT_STORE python3 - "$CLONE" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import annot.core as core
+rc = 0
+def report(name, good, detail):
+    global rc
+    rc |= 0 if good else 1
+    print("  %s %s %s" % ("PASS" if good else "FAIL", name, detail))
+core.QUERIES["gene_dossier"] = lambda st, a: (_ for _ in ()).throw(RuntimeError("injected query fault"))
+out = json.loads(core.dispatch("gene_dossier", {"gene": "Trp53"}))
+report("(a) fault in the query: reason=core_fault, no traceback",
+       out.get("status") == "error" and out.get("reason") == "core_fault"
+       and "RuntimeError: injected query fault" in (out.get("message") or ""),
+       "-> status=%r reason=%r" % (out.get("status"), out.get("reason")))
+core.QUERIES["gene_dossier"] = core.q_gene_dossier
+core._sha256_file = lambda p: (_ for _ in ()).throw(OSError("injected store fault"))
+out = json.loads(core.dispatch("gene_dossier", {"gene": "Trp53"}))
+report("(b) fault that also breaks provenance()'s own store read: still core_fault, still no traceback",
+       out.get("status") == "error" and out.get("reason") == "core_fault"
+       and "injected store fault" in ((out.get("provenance") or {}).get("unreadable") or ""),
+       "-> status=%r reason=%r provenance.read=%r" % (out.get("status"), out.get("reason"),
+                                                      (out.get("provenance") or {}).get("read")))
+sys.exit(rc)
+PY
+) >"$T/h5.txt" 2>"$T/h5.err"
+H5_RC=$?
+sed 's/^  //' "$T/h5.txt"
+[ "$H5_RC" = 0 ] && ! has_tr "$T/h5.err" \
+  && ok "H5 a fault injected into the core returns reason=core_fault twice, including for a fault in the store read the handler itself performs" \
+  || no "H5 an injected fault escaped or was not named (exit=$H5_RC); stderr $(head -c 200 "$T/h5.err")"
+
+echo "== H6 · A VIEW STRIPPED OF ITS SIDECARS IS REFUSED BY NAME, NEVER READ (its own rule) =="
+# req-P1-THE-PUBLISHED-DATASET-TRAVELS-WITH-IT (measured 2026-11-11): a view travels with
+# *.provenance.json and *.schema.json — source · release · fetched_at · licence · rows · the view's
+# sha256, and the columns. The .tsv alone is a number nobody can trace, so the door must REFUSE it
+# with a class of its own (view-unreceipted), naming the sidecar that is missing and the one command
+# that regenerates it. (a) is the control — the SAME store answers while both sidecars are there, so
+# the refusal below cannot be the store, the query, or the tsv.
+STRIPPED="$T/stripped"
+cp -a "$FIXTURE_STORE" "$STRIPPED" || true
+STRIP_TSV_SHA=$(sha256sum "$STRIPPED/view/mouse_gene.v1.tsv" | cut -d' ' -f1)
+ctlp=$(env ANNOT_STORE="$STRIPPED" python3 -m annot call gene_dossier --json '{"gene":"Trp53"}' 2>"$T/h6c.err" \
+  | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+v=(d.get("provenance") or {}).get("view") or {}
+print("%s|%s|%s|%s|%s" % (d.get("status"), v.get("rows"), v.get("intact"),
+                        v.get("sha256") == sys.argv[1], (d.get("subject") or {}).get("matched_by")))' "$STRIP_TSV_SHA" \
+  2>/dev/null)
+[ "$ctlp" = "ok|241|True|True|symbol_casefold" ] && ! has_tr "$T/h6c.err" \
+  && ok "H6 (a) control: the fixture store WITH both sidecars answers — status=ok, the door READ the view (241 rows, view.sha256 == sha256sum of the tsv, intact:true), Trp53 matched by symbol_casefold" \
+  || no "H6 (a) the control store did not answer '$ctlp' (expected 'ok|241|True|True|symbol_casefold'); stderr $(head -c 120 "$T/h6c.err")"
+
+# (b) both sidecars gone; (c) only the schema sidecar gone — each must be the SAME named refusal
+for case in "both:$STRIPPED" "schema-only:$STRIPPED/schema"; do
+  kind=${case%%:*}
+  if [ "$kind" = "schema-only" ]; then
+    rm -rf "$STRIPPED/schema" && cp -a "$FIXTURE_STORE" "$STRIPPED/schema" \
+      && rm -f "$STRIPPED/schema/view/mouse_gene.v1.schema.json"
+    S="$STRIPPED/schema"
+  else
+    rm -f "$STRIPPED/view/mouse_gene.v1.provenance.json" "$STRIPPED/view/mouse_gene.v1.schema.json"
+    S="$STRIPPED"
+  fi
+  env ANNOT_STORE="$S" python3 -m annot call gene_dossier --json '{"gene":"Trp53"}' \
+    >"$T/h6.$kind.json" 2>"$T/h6.$kind.err"
+  RC=$?
+  GOT=$(python3 -c 'import json,sys
+s=sys.argv[1]
+d=json.load(open(sys.argv[2]))
+m=d.get("message") or ""
+miss=" ".join(x.rsplit("/",1)[-1] for x in ((d.get("refusal") or {}).get("missing") or []))
+print("%s|%s|%s|%s|%s|%s" % (d.get("status"), d.get("reason"), len(d.get("items") or []),
+                            "REFUSED[view-unreceipted]" in m, miss,
+                            "--rebuild-from-raw" in m))' "$S" "$T/h6.$kind.json" 2>/dev/null)
+  want="refused|view-unreceipted|0|True|$([ "$kind" = schema-only ] && echo mouse_gene.v1.schema.json || echo "mouse_gene.v1.provenance.json mouse_gene.v1.schema.json")|True"
+  [ "$RC" = 3 ] && [ "$GOT" = "$want" ] && ! has_tr "$T/h6.$kind.err" \
+    && ok "H6 $kind stripped: status=refused reason=view-unreceipted, 0 items, exit 3, missing=$([ "$kind" = schema-only ] && echo 'schema only' || echo 'both sidecars') named, the regenerating command named, no traceback" \
+    || no "H6 $kind stripped: exit=$RC '$GOT' (expected 3 '$want'); stderr $(head -c 160 "$T/h6.$kind.err")"
+  [ "$(sha256sum "$S/view/mouse_gene.v1.tsv" | cut -d' ' -f1)" = "$STRIP_TSV_SHA" ] \
+    && ok "H6 $kind stripped: the .tsv itself is byte-identical before/after — the door read nothing and wrote nothing" \
+    || no "H6 $kind stripped: the .tsv changed during the refusal"
+done
+
+# (d) THE PUBLISHED VIEW TRAVELS WITH ITS RECEIPT — checked where it is, skipped by name where it is not.
+# harvester-view/ is the directory a reviewer opens; its provenance sidecar must name the tsv's own
+# sha256, so the number in the file and the number of the bytes cannot drift apart.
+HV="$FARM/harvester-view"
+if [ -f "$HV/mouse_gene.v1.tsv" ]; then
+  HV_GOT=$(python3 - "$HV" <<'PY'
+import hashlib, json, os, sys
+hv = sys.argv[1]
+tsv = os.path.join(hv, "mouse_gene.v1.tsv")
+prov = os.path.join(hv, "mouse_gene.v1.provenance.json")
+sch = os.path.join(hv, "mouse_gene.v1.schema.json")
+h = hashlib.sha256(open(tsv, "rb").read()).hexdigest()
+rows = sum(1 for _ in open(tsv, "rb")) - 1
+try:
+    p = json.load(open(prov))
+    s = json.load(open(sch))
+except Exception as e:
+    print("unreadable|%s" % e); raise SystemExit
+srcs = p.get("sources") or {}
+named = sorted(k for k, v in srcs.items()
+               if v.get("release") and v.get("fetched_at") and (v.get("licence") or {}).get("name"))
+print("%s|%s|%s|%s|%s|%s|%s" % (h == p.get("view_sha256"), rows, p.get("rows"),
+                                hashlib.sha256(open(sch, "rb").read()).hexdigest() == p.get("schema_sha256"),
+                                len(s.get("columns") or []), ",".join(named), rows == 77144))
+PY
+)
+  [ "$HV_GOT" = "True|77144|77144|True|6|ensembl_biomart,mgi|True" ] \
+    && ok "H6 (d) harvester-view/: the sidecars are next to the tsv and agree with it — provenance sha256 == sha256sum of the tsv, rows=77144 in the file AND in the receipt, schema sha256 == sha256 of the .schema.json, 6 columns, and both sources name source·release·fetched_at·licence" \
+    || no "H6 (d) harvester-view/ does not travel with a receipt that agrees with it: '$HV_GOT' (expected 'True|77144|77144|True|6|ensembl_biomart,mgi|True')"
+else
+  ok "H6 (d) no harvester-view/ in this tree (looked for $HV/mouse_gene.v1.tsv) — the published-view check does not apply here, and says so"
+fi
 
 echo "== F · THE STORE WAS NOT TOUCHED BY ANY OF THE ABOVE =="
 AFTER=$(manifest)

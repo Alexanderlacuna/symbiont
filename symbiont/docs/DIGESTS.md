@@ -2,8 +2,10 @@
 
 (req-P1-THE-FOUR-DIGESTS-schemas-and-cadence. The implementation is ONE file,
 `symbiont/digests.py`; the proofs are `symbiont/selftest_digests.py` (`make check` runs them).
-DESIGN-STATION.md §4 names four digests — RELEASE-WATCH · STALENESS · GAPS · SUGGEST — and
+DESIGN-STATION.md† §4 names four digests — RELEASE-WATCH · STALENESS · GAPS · SUGGEST — and
 until this page none had a schema. One page, no more.)
+
+† the design record is held back from this public subset — it is a row in [`../docs/WITHHELD.md`](../docs/WITHHELD.md).
 
 ## 1 · THE FOUR DIGESTS AND WHERE THEY LIVE
 

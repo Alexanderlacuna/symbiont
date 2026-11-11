@@ -80,7 +80,7 @@ The cycle is the ORCHESTRATOR that runs them in one order, on one budget, and wr
 ```
 DESIGN §4 says the station's research layer has "senses and a mouth, NEVER A WILL". admit-by-policy is a narrow will: it moves exactly one
 decision — which already-passing source goes live — from a person to a policy file the operator writes.
-An owner review was asked: "May the SHIPPED station admit a data source by policy with no human in the runtime loop?" with options
+The court was asked: "May the SHIPPED station admit a data source by policy with no human in the runtime loop?" with options
 A (off by default, admit-by-policy inside a deployment — recommended) · B (spec only) · C (on by default) · D (signed approval every time).
 UNTIL IT RULES, `admit.by_policy` stays false and this document is a design, not a licence.
 ```
