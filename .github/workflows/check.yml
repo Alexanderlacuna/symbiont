@@ -26,6 +26,26 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
 
+      # ── 0b · THE CONFINEMENT TIER THE SANDBOX SUITE REQUIRES ────────────────────────────
+      # EXPECTED: a confinement tier present for the tree's own sandbox suite, which is
+      # fail-closed BY DESIGN — it refuses to run unconfined and says so
+      # (SandboxRefused: "no confinement tier can confine this run"). MEASURED on the runner
+      # 2026-11-11: none of the three tiers it probes was available (bubblewrap: not installed;
+      # guix: not installed; unshare: /proc/self/uid_map: Operation not permitted — Ubuntu 26
+      # runners restrict unprivileged user namespaces). Bubblewrap is the tier the suite names
+      # first, so that is the one installed here. No service, no secret, no deploy step — one
+      # package, because the suite cannot be green without a tier to enforce.
+      - name: the confinement tier — bubblewrap for the sandbox suite
+        run: |
+          set -euo pipefail
+          if command -v bwrap >/dev/null 2>&1; then
+            echo "bubblewrap already on the runner: $(bwrap --version)"
+          else
+            sudo apt-get update -q >/dev/null
+            sudo apt-get install -y -q bubblewrap >/dev/null
+            echo "installed bubblewrap on the runner: $(bwrap --version)"
+          fi
+
       # ── 0 · THE TREE'S OWN PIN ────────────────────────────────────────────────────────────────
       # EXPECTED: pyproject.toml states the one third-party dependency with ONE exact version, and
       # that exact version installs. A versionless or ranged spec is not a spec — this step refuses
@@ -162,21 +182,4 @@ jobs:
             echo "  NO-FOOTNOTE — a withheld path is cited in a reader-facing file with no '†'"
             python3 tools/withheld-reconcile.py || true   # verbose: prints every offender by file:line
             exit "$rc"
-          fi
-
-      # ── BRANCH-ONLY DIAGNOSTIC v3 (NOT part of the deliverable; removed before the final runs) ──
-      #    the 10-annotations-per-step cap ate everything after the head lines in v2, so the
-      #    DECISIVE lines go first: env, then every FAIL/Traceback line, then the tail.
-      - name: DIAGNOSTIC — the failure tail, decisive lines first
-        if: failure()
-        run: |
-          esc(){ printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/\r/%0D/g'; }
-          printf "::error title=ENV::%s\n" "$(esc "$(uname -r) bwrap=$(command -v bwrap || echo none) userns=$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo unset) py=$(python3 -V 2>&1) yaml=$(python3 -c 'import yaml;print(yaml.__version__)' 2>&1)")"
-          if [ -f /tmp/make-check.out ]; then
-            wc -l /tmp/make-check.out | while IFS= read -r l; do printf "::error title=SIZE::%s\n" "$(esc "$l")"; done
-            grep -nE 'FAIL|Traceback|Error|REFUSED|AssertionError|not set|missing|assert' /tmp/make-check.out | tail -5 \
-              | while IFS= read -r l; do printf "::error title=FAILLINE::%s\n" "$(esc "$l")"; done
-            tail -3 /tmp/make-check.out | while IFS= read -r l; do printf "::error title=TAIL::%s\n" "$(esc "$l")"; done
-          else
-            printf "::error title=SIZE::no /tmp/make-check.out — the (a) step died before tee\n"
           fi
