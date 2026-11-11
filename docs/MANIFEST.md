@@ -33,6 +33,37 @@ REFUSED[schema-unknown]   the schema name or version in the manifest is not one 
 Identity is producer-scoped (`mgi:MRK_ENSEMBL` names a dataset in the producer's registry, not a global name), so what makes a federated row traceable is
 the `via:` chain, never the resemblance of a name.
 
+## 2b · FEDERATION COMPATIBILITY — four gates, cheapest first, each with a named refusal
+A consumer of another station's handover passes four independent gates before ingestion. They answer four different questions, and passing one says
+nothing about the next.
+
+```
+1 HANDOVER CONTRACT    can I verify the package?            sha256 + row/byte counts against the manifest      REFUSED[hash-mismatch] [count-mismatch]
+2 DATASET SCHEMA       do I understand what a row MEANS?    schema name · version · sha256 against what I implement   REFUSED[schema-unknown]
+3 PROVENANCE CHAIN     can I trace where it came from?      via: links, recursively, plus each row's upstream source+release   REFUSED[provenance-cycle] [via-missing]
+4 LICENCE OBLIGATIONS  may I consume and redistribute it?   the stitched attribution, transitively, plus my own redistribution terms   REFUSED[licence-unreadable]
+        │
+        ▼
+   the consumer's EXISTING admission funnel — probe · evaluate · sandbox (throwaway store, counts checked) · card · admit
+```
+The funnel is unchanged: a federated source is admitted like any other, and its sandbox trial checks the copy's counts — which is transport integrity, not
+re-derivation.
+
+### The two limits this checklist does NOT remove
+```
+· SCHEMA VERSION IS TEMPORAL. A row ingested under schema v1 does not mean what a v2 row means. So the schema version is stored per run (and per row), and a
+  schema bump is a re-admission event, exactly as a release move is — otherwise a corpus silently mixes two meanings under one name.
+· A SCHEMA HASH CATCHES SHAPE, NOT INTENT. A producer can keep the schema byte-identical and change what the values mean. No boundary check can see that;
+  only re-derivation can — which federation, by definition, cannot do. So the honest claim for federated rows stays `verified: manifest`, and the card must say
+  the authority was not re-derived.
+```
+
+### The principle in one line
+```
+Stations may be independent in implementation, independent in governance and different in specialisation — they need compatible MEANINGS at the boundary,
+not identical internals.
+```
+
 ## 3 · VERIFICATION DEPTH — the field that keeps a corpus honest
 Every row and every source block carries a `verified` field:
 ```
