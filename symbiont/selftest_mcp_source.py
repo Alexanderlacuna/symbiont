@@ -1,0 +1,474 @@
+"""PROOF of the generic MCP adapter — any external MCP server as a source, configured from its
+sources.yml entry (req-P1-A-GENERIC-MCP-ADAPTER-any-external-M).
+
+Every fixture below is a REAL MCP server process (symbiont/fixtures/mcp/server_*.py) spoken to over
+a REAL pipe or a REAL HTTP socket: the transport, the handshake, tools/list, the pin and the
+response mapping are exercised, and only the DATA is fixture data. The five things the row's gate
+names, each as a quoted line and an exit code:
+
+  F1 SHAPE A     fixture_alpha  stdio, text-content JSON, count field in the response
+                 -> exit 0, 7 canonical records, EVERY row carrying its own source+source_release,
+                    verify OK against the source's own count
+  F2 SHAPE B     fixture_beta   stdio, structuredContent, and the count is a SECOND TOOL
+                 -> exit 0, 7 canonical records, per-row source+release, count quoted from beta_count
+  F3 NO COUNT    fixture_gamma_source -- the count rule, refusal half
+                 -> REFUSED[no-count-endpoint] BY NAME, exit 2, ZERO tool calls (nothing left the box)
+  F4 NO COUNT    fixture_gamma_tool -- the count rule, allowed half
+                 -> exit 0, 3 records stamped published:false / count_source:none, verify says TOOL
+  F5 SHAPE DRIFT MCP_FIXTURE_SHAPE=v2 (the same server RENAMES its output)
+                 -> REFUSED[schema-drift], exit 7, naming the pointer — and NO records file written
+  F6 PIN DRIFT   MCP_FIXTURE_SHAPE=desc against a config that DECLARES the tool-description hash
+                 -> REFUSED[schema-drift], exit 7, "pin broken"
+  F7 HTTP        the same no-count fixture over streamable HTTP -> exit 0, and the network allowlist
+                 generated from that entry is exactly its host
+  F8 SANDBOX     the allowlist has teeth: EMPTY (what a stdio entry gets) refuses even loopback and
+                 records a `sandbox-breach`; the http entry's host allows the same connection
+  F9 ACCOUNTING  every run's rows_in == records + rejects (nothing vanishes without a reason)
+  F10 NO REGRESSION  the REAL PubMed MCP still works through the OLD pinned client
+                 (symbiont/literature/mcp.py) — unchanged, and the pin/licence/handshake still hold
+  F11 loop.py untouched: neither loop mentions this adapter, and the module imports no loop
+  F12 DRIFT SIGNAL  the whole tools/list, at admission and on every run
+                 (req-P1-THE-DRIFT-SIGNAL-EXPIRE-THE-TRIAL): the admission record carries the
+                 tools/list sha256 + declared version; a server that GAINS ONE TOOL is
+                 REFUSED[schema-drift] naming BOTH hashes, the trial is marked expired, and the
+                 NEXT run SKIPS the source BY NAME with the expiry reason (no child process)
+  F13 VERSION DRIFT the same, with ONLY serverInfo.version moved -> expired too
+  F14 RE-TRIAL   the way back from an expiry: --retrial re-reads tools/list inside the sandbox,
+                 makes ZERO tool calls, quotes both sides, re-arms the trial; the next run
+                 harvests normally
+
+Usage: python3 -m symbiont.selftest_mcp_source            (exit 0 only when all pass)
+       python3 -m symbiont.selftest_mcp_source --offline  (skips F10, the only test that needs the
+                                                          network; the skip is PRINTED, never silent)
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+FARM = os.path.dirname(ROOT)
+CONFIG = os.path.join(ROOT, "fixtures", "mcp", "sources.yml")
+GAMMA = os.path.join(ROOT, "fixtures", "mcp", "server_gamma.py")
+CLI = [sys.executable, "-m", "symbiont.adapters.mcp_source"]
+
+RESULTS: list[tuple[str, bool, str]] = []
+SKIPPED: list[str] = []
+
+# F10's input: the pinned PubMed MCP package. It is EXCLUDED from the shipped repo (74 MB of
+# node_modules, DESIGN-STATION §1b), so a clone cannot run F10 — the absence is a NAMED SKIP,
+# never a red line. A package that IS there but broken stays a FAIL (that is the whole point of
+# a no-regression test).
+PUBMED_PKG = os.path.join(ROOT, "literature", "mcp-server", "node_modules", "@cyanheads",
+                          "pubmed-mcp-server", "package.json")
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    RESULTS.append((name, ok, detail))
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  {detail}" if detail else ""), flush=True)
+
+
+def skip(name: str, missing: str, path: str) -> None:
+    """An ABSENT input is a SKIP that names itself and the path — counted, never a red line."""
+    SKIPPED.append(name)
+    print(f"  SKIP  {name}: {missing} at {path}", flush=True)
+
+
+def run(store: str, extra: list[str], env_extra: dict | None = None, term: str = "*",
+        source: str = "") -> tuple[int, str]:
+    env = dict(os.environ)
+    env.pop("MCP_FIXTURE_SHAPE", None)
+    env.pop("MCP_FIXTURE_VERSION", None)
+    env.update(env_extra or {})
+    argv = CLI + ["--config", CONFIG, "--store", store, "--term", term]
+    if source:
+        argv += ["--source", source]
+    argv += list(extra or [])
+    p = subprocess.run(argv, cwd=FARM, env=env, capture_output=True, text=True, timeout=300)
+    return p.returncode, p.stdout + p.stderr
+
+
+def decisive(out: str, *prefixes: str) -> str:
+    for line in out.splitlines():
+        if line.startswith(prefixes):
+            return line.strip()
+    return ""
+
+
+def run_record(store: str, source: str) -> dict:
+    """The NEWEST run record for a source, by mtime — not by file name: a skip record is written
+    with a `-skipN` suffix when it shares a run id's second with another run, and name order would
+    then return the elder record while looking like the newest."""
+    d = os.path.join(store, "runs")
+    if not os.path.isdir(d):
+        return {}
+    cands = [os.path.join(d, name) for name in os.listdir(d)
+             if name.endswith(f".{source}.json")]
+    for p in sorted(cands, key=lambda q: (os.path.getmtime(q), q), reverse=True):
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh)
+    return {}
+
+
+def trial_of(store: str, source: str) -> dict:
+    """The trial the last run left on disk (state/<id>.trial.json) — the drift signal's memory."""
+    p = os.path.join(store, "state", f"{source}.trial.json")
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def rows(store: str, source: str) -> list[dict]:
+    d = os.path.join(store, "records", source)
+    if not os.path.isdir(d):
+        return []
+    out: list[dict] = []
+    for name in sorted(os.listdir(d)):
+        with open(os.path.join(d, name), encoding="utf-8") as fh:
+            out += [json.loads(line) for line in fh if line.strip()]
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+def f1_alpha(store: str) -> None:
+    rc, out = run(store, [], source="fixture_alpha")
+    rec, rs = run_record(store, "fixture_alpha"), rows(store, "fixture_alpha")
+    per_row = rs and all(r.get("source") == "fixture_alpha" and r.get("source_release") for r in rs)
+    rel = {r.get("source_release") for r in rs}
+    check("F1 SHAPE A  fixture_alpha -> exit 0, canonical records with per-row source+release",
+          rc == 0 and rec.get("status") == "PUBLISHED" and len(rs) == 7 and per_row and len(rel) == 1,
+          f"exit={rc} records={len(rs)} releases={sorted(rel)} "
+          f"pin_state={(rec.get('pin') or {}).get('pin_state')}")
+    v = rec.get("verify") or {}
+    check("F1 verify  ours == the source's OWN count (a count FIELD in the search response)",
+          v.get("ok") is True and v.get("ours") == 7 and v.get("source_count") == 7,
+          (v.get("detail") or "")[:200])
+
+
+def f2_beta(store: str) -> None:
+    rc, out = run(store, [], source="fixture_beta")
+    rec, rs = run_record(store, "fixture_beta"), rows(store, "fixture_beta")
+    per_row = rs and all(r.get("source") == "fixture_beta" and r.get("source_release") for r in rs)
+    v = rec.get("verify") or {}
+    check("F2 SHAPE B  fixture_beta (structuredContent + a COUNT TOOL) -> exit 0, records+release",
+          rc == 0 and len(rs) == 7 and per_row and (rec.get("cost") or {}).get("tool_calls") == 2,
+          f"exit={rc} records={len(rs)} tool_calls={(rec.get('cost') or {}).get('tool_calls')}")
+    check("F2 verify  the count came from the SECOND TOOL, quoted",
+          v.get("ok") is True and v.get("source_count") == 7 and "count_tool" in (v.get("detail") or ""),
+          (v.get("detail") or "")[:200])
+
+
+def f3_nocount_source(store: str) -> None:
+    rc, out = run(store, [], source="fixture_gamma_source")
+    rec = run_record(store, "fixture_gamma_source")
+    line = decisive(out, "REFUSED[no-count-endpoint]")
+    check("F3 NO COUNT as a SOURCE -> REFUSED[no-count-endpoint] BY NAME, exit 2",
+          rc == 2 and rec.get("code") == "no-count-endpoint" and "fixture_gamma_source" in line,
+          line[:180])
+    check("F3 nothing left the box: ZERO tool calls, no records file",
+          (rec.get("cost") or {}).get("tool_calls") == 0 and not rows(store, "fixture_gamma_source"),
+          f"tool_calls={(rec.get('cost') or {}).get('tool_calls')}")
+
+
+def f4_nocount_tool(store: str) -> None:
+    rc, out = run(store, [], source="fixture_gamma_tool")
+    rec, rs = run_record(store, "fixture_gamma_tool"), rows(store, "fixture_gamma_tool")
+    v = rec.get("verify") or {}
+    stamped = rs and all(r.get("published") is False and r.get("count_source") == "none" for r in rs)
+    check("F4 NO COUNT as a TOOL -> exit 0, records stamped published:false / count_source:none",
+          rc == 0 and rec.get("status") == "TOOL-CALL" and len(rs) == 3 and stamped,
+          f"exit={rc} records={len(rs)} status={rec.get('status')}")
+    check("F4 verify  says in its own words that this was a TOOL call, never a claim",
+          v.get("ok") is True and v.get("source_count") is None and "TOOL mode" in (v.get("detail") or ""),
+          (v.get("detail") or "")[:200])
+
+
+def f5_shape_drift(store: str) -> None:
+    rc, out = run(store, [], env_extra={"MCP_FIXTURE_SHAPE": "v2"}, source="fixture_alpha")
+    rec = run_record(store, "fixture_alpha")
+    line = decisive(out, "REFUSED[schema-drift]")
+    check("F5 SHAPE DRIFT -> REFUSED[schema-drift], exit 7, naming the moved pointer",
+          rc == 7 and rec.get("code") == "schema-drift" and "/result/hits" in line, line[:220])
+    check("F5 and NOT silently reshaped: no records file was written for that run",
+          not any(f.startswith("fixture-alpha-mcp") for f in
+                  (os.listdir(os.path.join(store, "records", "fixture_alpha"))
+                   if os.path.isdir(os.path.join(store, "records", "fixture_alpha")) else [])),
+          "records/ has no page for the drifted release")
+
+
+def f6_pin_drift(store: str, tmp: str) -> None:
+    p = subprocess.run(CLI + ["--config", CONFIG, "--source", "fixture_alpha", "--print-pin"],
+                       cwd=FARM, capture_output=True, text=True, timeout=120)
+    pin = json.loads(p.stdout) if p.returncode == 0 else {}
+    sha = pin.get("tool_description_sha256", "")
+    import yaml
+    src = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+    entry = [s for s in src["sources"] if s["id"] == "fixture_alpha"][0]
+    entry["pin"]["tool_description_sha256"] = sha          # the pin, as an ADMISSION would record it
+    cfg = os.path.join(tmp, "pinned.yml")
+    with open(cfg, "w", encoding="utf-8") as fh:
+        yaml.safe_dump({"version": 1, "sources": [entry]}, fh, sort_keys=False)
+
+    env = dict(os.environ, MCP_FIXTURE_SHAPE="desc")
+    ok_run = subprocess.run(CLI + ["--config", cfg, "--store", store + "-pinok", "--term", "*",
+                                   "--source", "fixture_alpha"],
+                            cwd=FARM, env={k: v for k, v in env.items() if k != "MCP_FIXTURE_SHAPE"},
+                            capture_output=True, text=True, timeout=300)
+    drift = subprocess.run(CLI + ["--config", cfg, "--store", store + "-pindrift", "--term", "*",
+                                  "--source", "fixture_alpha"],
+                           cwd=FARM, env=env, capture_output=True, text=True, timeout=300)
+    line = decisive(drift.stdout + drift.stderr, "REFUSED[schema-drift]")
+    check("F6 PIN: the DECLARED tool-description hash matches -> the run is allowed (pin checked)",
+          ok_run.returncode == 0 and "pin broken" not in ok_run.stdout,
+          f"exit={ok_run.returncode} declared={sha[:16]}…")
+    check("F6 PIN DRIFT -> REFUSED[schema-drift], exit 7, quoting both hashes",
+          drift.returncode == 7 and "pin broken" in line and sha[:16] in line, line[:240])
+
+
+def f12_drift_signal(tmp: str) -> None:
+    """NSC 1+2: unchanged server runs normally with tools_hash in the record; a server that GAINS
+    ONE TOOL is REFUSED[schema-drift] naming BOTH hashes; the next run SKIPS it by name."""
+    store = os.path.join(tmp, "driftsig")
+    rc0, out0 = run(store, [], source="fixture_alpha")
+    rec0 = run_record(store, "fixture_alpha")
+    pinned = rec0.get("tools_hash") or ""
+    trial0 = trial_of(store, "fixture_alpha")
+    admitted = dict(trial0.get("admitted") or {})
+    check("F12a unchanged server -> exit 0, and the record carries tools_hash AND version",
+          rc0 == 0 and rec0.get("status") == "PUBLISHED" and len(pinned) == 64
+          and rec0.get("version") == "1.0.0",
+          f"tools_hash={pinned} version={rec0.get('version')} "
+          f"version_declared={rec0.get('version_declared')}")
+    check("F12b AT ADMISSION the tools/list sha256 + declared version are stored beside the trial",
+          len(str(admitted.get("tools_sha256") or "")) == 64 and admitted.get("version") == "1.0.0",
+          f"state/fixture_alpha.trial.json admitted={json.dumps(admitted)}")
+
+    rc1, out1 = run(store, [], env_extra={"MCP_FIXTURE_SHAPE": "tools"}, source="fixture_alpha")
+    line1 = decisive(out1, "REFUSED[schema-drift]")
+    seen = str(((trial_of(store, "fixture_alpha").get("seen") or {}).get("tools_sha256")) or "")
+    check("F12c a server that GAINS ONE TOOL -> REFUSED[schema-drift], exit 7, BOTH hashes quoted",
+          rc1 == 7 and bool(pinned) and pinned in line1 and bool(seen) and seen != pinned
+          and seen in line1 and "alpha_export" in line1, line1[:240])
+    check("F12c and the trial is marked EXPIRED on disk (state=expired, both sides kept)",
+          trial0.get("state") == "admitted"
+          and trial_of(store, "fixture_alpha").get("state") == "expired",
+          f"state={trial_of(store, 'fixture_alpha').get('state')} "
+          f"why={trial_of(store, 'fixture_alpha').get('why')}")
+
+    rc2, out2 = run(store, [], source="fixture_alpha")
+    skip = decisive(out2, "SKIP")
+    rec2 = run_record(store, "fixture_alpha")
+    check("F12d the NEXT run SKIPS it BY NAME with the expiry reason (no child, no tool call)",
+          rc2 == 0 and "fixture_alpha" in skip and "reason=trial-expired" in skip
+          and rec2.get("status") == "SKIPPED" and rec2.get("code") == "trial-expired"
+          and (rec2.get("cost") or {}).get("tool_calls") == 0
+          and (rec2.get("confine") or {}).get("tier") == "not-run", skip[:240])
+
+
+def f13_version_drift(tmp: str) -> None:
+    """NSC 4: a server that changes ONLY its version string expires the trial too."""
+    store = os.path.join(tmp, "versiondrift")
+    rc0, _ = run(store, [], source="fixture_alpha")
+    rc1, out1 = run(store, [], env_extra={"MCP_FIXTURE_VERSION": "2.0.0"}, source="fixture_alpha")
+    line1 = decisive(out1, "REFUSED[schema-drift]")
+    check("F13 ONLY the version string moves -> REFUSED[schema-drift], exit 7, both versions quoted",
+          rc0 == 0 and rc1 == 7
+          and "declared version 1.0.0 -> serverInfo.version 2.0.0" in line1, line1[:240])
+    rc2, out2 = run(store, [], source="fixture_alpha")
+    skip = decisive(out2, "SKIP")
+    check("F13b and the next run skips it by name with that same expiry reason",
+          rc2 == 0 and "reason=trial-expired" in skip and "serverInfo.version 2.0.0" in skip,
+          skip[:240])
+
+
+def f14_retrial(tmp: str) -> None:
+    """The way back from an expiry is an operator act with a record: --retrial, zero tool calls."""
+    store = os.path.join(tmp, "retrial")
+    run(store, [], source="fixture_alpha")
+    run(store, [], env_extra={"MCP_FIXTURE_SHAPE": "tools"}, source="fixture_alpha")
+    rc1, out1 = run(store, ["--retrial"], source="fixture_alpha")
+    rec1 = run_record(store, "fixture_alpha")
+    prev = dict((rec1.get("retrial") or {}).get("previous") or {})
+    check("F14 --retrial re-arms the trial with ZERO tool calls and quotes both sides",
+          rc1 == 0 and rec1.get("status") == "RE-TRIAL"
+          and (rec1.get("cost") or {}).get("tool_calls") == 0
+          and prev.get("state") == "expired" and bool(prev.get("pinned")),
+          f"exit={rc1} status={rec1.get('status')} "
+          f"tool_calls={(rec1.get('cost') or {}).get('tool_calls')} "
+          f"previous={json.dumps(prev.get('pinned') or {})}")
+    rc2, out2 = run(store, [], source="fixture_alpha")
+    rec2 = run_record(store, "fixture_alpha")
+    check("F14b the harvest after a re-trial runs normally (and carries tools_hash)",
+          rc2 == 0 and rec2.get("status") == "PUBLISHED"
+          and len(str(rec2.get("tools_hash") or "")) == 64,
+          f"exit={rc2} status={rec2.get('status')} tools_hash={rec2.get('tools_hash')}")
+    rc3, out3 = run(store, ["--retrial"], source="fixture_alpha")
+    check("F14c a re-trial of a HEALTHY source is REFUSED (it would erase the drift baseline)",
+          rc3 == 2 and "not 'expired'" in decisive(out3, "REFUSED[config]"),
+          decisive(out3, "REFUSED[config]")[:200])
+
+
+def f7_http(store: str, tmp: str) -> None:
+    srv = subprocess.Popen([sys.executable, GAMMA, "--http", "0"], cwd=FARM,
+                           stdout=subprocess.PIPE, text=True)
+    try:
+        line = srv.stdout.readline().strip()
+        port = int(line.split(":")[-1]) if line.startswith("LISTENING") else 0
+        if not port:
+            check("F7 HTTP transport -> the fixture served on a port", False, f"no LISTENING line ({line!r})")
+            return
+        import yaml
+        src = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+        e = dict([s for s in src["sources"] if s["id"] == "fixture_gamma_tool"][0])
+        e["id"] = "fixture_gamma_http"
+        e["note"] = "the same no-count server over streamable HTTP (POST /mcp)"
+        e["transport"] = {"kind": "http", "url": f"http://127.0.0.1:{port}/mcp", "call_timeout_s": 30}
+        cfg = os.path.join(tmp, "http.yml")
+        with open(cfg, "w", encoding="utf-8") as fh:
+            yaml.safe_dump({"version": 1, "sources": [e]}, fh, sort_keys=False)
+        p = subprocess.run(CLI + ["--config", cfg, "--store", store, "--term", "*",
+                                  "--source", "fixture_gamma_http"],
+                           cwd=FARM, capture_output=True, text=True, timeout=300)
+        rs = rows(store, "fixture_gamma_http")
+        rec = run_record(store, "fixture_gamma_http")
+        check("F7 HTTP transport -> exit 0, records normalised over POST /mcp",
+              p.returncode == 0 and len(rs) == 3,
+              f"exit={p.returncode} records={len(rs)} url={e['transport']['url']}")
+        pol = (rec.get("network") or {}).get("allowlist")
+        check("F7 the network allowlist generated FROM THE ENTRY is that endpoint's host, nothing else",
+              pol == ["127.0.0.1"] and f"ip daddr 127.0.0.1" in
+              json.dumps((rec.get("sandbox_policy") or {}).get("ruleset", "")),
+              f"allowlist={pol}")
+    finally:
+        srv.terminate()
+        try:
+            srv.wait(timeout=10)
+        except Exception:
+            srv.kill()
+
+
+def f8_sandbox(store: str) -> None:
+    from symbiont import sandbox
+    rc, out = run(store, [], source="fixture_alpha")
+    rec = run_record(store, "fixture_alpha")
+    check("F8a a stdio entry's allowlist is EMPTY and the run makes ZERO connect attempts",
+          (rec.get("network") or {}).get("allowlist") == [] and not (rec.get("sandbox_refusals") or []),
+          f"allowlist={(rec.get('network') or {}).get('allowlist')} "
+          f"refusals={len(rec.get('sandbox_refusals') or [])}")
+    refs: list = []
+    with sandbox.network_guard(set(), refusals=refs):          # the EMPTY allowlist, armed
+        refused = False
+        try:
+            socket.create_connection(("127.0.0.1", 80), timeout=2)
+        except Exception:
+            refused = True
+    check("F8b the EMPTY allowlist REFUSES even loopback, and records it as a `sandbox-breach`",
+          refused and refs and refs[0].get("finding_class") == "sandbox-breach",
+          f"refusal={json.dumps(refs[0])[:160] if refs else 'NONE'}")
+
+
+def f9_accounting(store: str) -> None:
+    bad = []
+    for sid in ("fixture_alpha", "fixture_beta", "fixture_gamma_tool"):
+        n = (run_record(store, sid) or {}).get("normalise") or {}
+        if n and n["rows_in"] != n["records"] + n["rejects"]:
+            bad.append(f"{sid}: {n['rows_in']} != {n['records']}+{n['rejects']}")
+    check("F9 ACCOUNTING: rows_in == records + rejects on every run (nothing vanishes quietly)",
+          not bad, "; ".join(bad) or "alpha/beta/gamma all close")
+
+
+def f10_pubmed(offline: bool) -> None:
+    if offline:
+        check("F10 NO REGRESSION — SKIPPED by --offline (this is a network test, not a silent pass)",
+              True, "skipped on request")
+        return
+    if not os.path.exists(PUBMED_PKG):
+        skip("F10 NO REGRESSION the OLD pinned PubMed client still runs",
+             "the pinned PubMed MCP package (node_modules, 74 MB — excluded from the repo, so a "
+             "clone has it only after `npm install` in that directory)", PUBMED_PKG)
+        return
+    sys.path.insert(0, FARM)
+    from symbiont.literature import contract as lit
+    from symbiont.literature.mcp import MCPClient, MCPError
+    cfg_path = os.path.join(ROOT, "literature", "sources.yml")
+    try:
+        cfg = lit.load_sources(cfg_path)
+        c = MCPClient(cfg["mcp"], cfg["budget"], os.path.dirname(cfg_path))
+    except (MCPError, Exception) as e:                                  # noqa: B014 - named below
+        check("F10 NO REGRESSION — the OLD pinned PubMed client still runs", False,
+              f"{type(e).__name__}: {str(e)[:200]}")
+        return
+    try:
+        text = c.call("pubmed_search_articles", {"query": "Brca1[Title] AND mouse[MeSH Terms]",
+                                                 "maxResults": 2})
+        ret = [l for l in text.splitlines() if l.startswith("**Returned:")]
+        ok = bool(ret) and c.provenance.get("version") == c.provenance.get("pin")
+        check("F10 NO REGRESSION — the OLD pinned PubMed client retrieves through the REAL MCP",
+              ok, f"{ret[0].strip() if ret else 'no Returned line'} · "
+                  f"pin {c.provenance.get('package')}@{c.provenance.get('pin')} verified on disk")
+    finally:
+        c.close()
+
+
+def f11_loop_untouched() -> None:
+    loops = ["symbiont/loop.py", os.path.join("symbiont", "literature", "loop.py")]
+    hits, shas = [], {}
+    for rel in loops:
+        p = os.path.join(FARM, rel)
+        with open(p, encoding="utf-8") as fh:
+            text = fh.read()
+        n = text.count("mcp_source")
+        hits.append(f"{rel}:{n}")
+        shas[rel] = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    mod = open(os.path.join(ROOT, "adapters", "mcp_source.py"), encoding="utf-8").read()
+    imports_loop = ("from ..loop import" in mod or "from .loop import" in mod
+                    or "import loop" in mod)
+    check("F11 loop.py untouched: neither loop names this adapter, and the adapter imports no loop",
+          all(h.endswith(":0") for h in hits) and not imports_loop,
+          f"{' '.join(hits)} sha256={json.dumps(shas)}")
+
+
+def main(argv=None) -> int:
+    offline = "--offline" in (argv if argv is not None else sys.argv[1:])
+    print("== PROOF: a generic MCP adapter — two shapes, the count rule, the drift refusal, the "
+          "sandbox, and the PubMed no-regression ==")
+    tmp = tempfile.mkdtemp(prefix="mcp-source-selftest-")
+    store = os.path.join(tmp, "store")
+    try:
+        f1_alpha(os.path.join(tmp, "alpha"))
+        f2_beta(os.path.join(tmp, "beta"))
+        f3_nocount_source(os.path.join(tmp, "gamma-src"))
+        f4_nocount_tool(os.path.join(tmp, "gamma-tool"))
+        f5_shape_drift(os.path.join(tmp, "drift"))
+        f6_pin_drift(os.path.join(tmp, "pindrift"), tmp)
+        f12_drift_signal(tmp)
+        f13_version_drift(tmp)
+        f14_retrial(tmp)
+        f7_http(os.path.join(tmp, "http"), tmp)
+        f8_sandbox(os.path.join(tmp, "sandbox"))
+        f9_accounting(os.path.join(tmp, "alpha"))
+        f11_loop_untouched()
+        f10_pubmed(offline)                       # last: the only test that needs the network
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+    passed = sum(1 for _, ok, _ in RESULTS if ok)
+    failed = len(RESULTS) - passed
+    print(f"RESULT: {passed} passed, {failed} failed")
+    print(f"RESULT: {passed} passed, {len(SKIPPED)} skipped, {failed} failed "
+          + ("(clone mode)" if SKIPPED else "(every check ran — no skip)"))
+    if SKIPPED:
+        print(f"SKIPPED: {len(SKIPPED)} check(s) whose input is not in this tree: "
+              + "; ".join(SKIPPED))
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

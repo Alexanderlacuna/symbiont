@@ -1,0 +1,33 @@
+{
+  "etags": {
+    "mrk_ensembl": "",
+    "mrk_list1_gz": ""
+  },
+  "licence": {
+    "name": "MGI data and annotations: CC-BY 4.0 (attribution required)",
+    "quote": "MGI data and annotations are licensed under a Creative Commons Attribution 4.",
+    "terms_sha256": "20b901db07f273b4743e4be03f101deecce68b867df3b236347357da12a07048",
+    "url": "http://127.0.0.1:37717/reports/licence.html"
+  },
+  "published_count": null,
+  "release": "mgi-2026-11-09",
+  "release_at": "2026-11-10T13:13:28.045383+00:00",
+  "run_id": "doors-fixture-1",
+  "snapshots": {
+    "mrk_ensembl": {
+      "bytes": 81865,
+      "path": "/home/kabui/app-farm/symbiont/fixtures/store-doors/raw/mgi/mgi-2026-11-09/6952252ec790e8644f34c48ad70d57fd479cb3b41f762b4bd3002cde4fde69af.rpt",
+      "release": "mgi-2026-11-09",
+      "sha256": "6952252ec790e8644f34c48ad70d57fd479cb3b41f762b4bd3002cde4fde69af",
+      "url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt"
+    },
+    "mrk_list1_gz": {
+      "bytes": 8515,
+      "path": "/home/kabui/app-farm/symbiont/fixtures/store-doors/raw/mgi/mgi-2026-11-09/891de1d658ae98449b39e2e3995d2535c4124147b900e564391d52bc03bbe1fb.rpt.gz",
+      "release": "mgi-2026-11-09",
+      "sha256": "891de1d658ae98449b39e2e3995d2535c4124147b900e564391d52bc03bbe1fb",
+      "url": "http://127.0.0.1:37717/reports/MRK_List1.rpt.gz"
+    }
+  },
+  "updated_at": "2026-11-10T13:13:28.051757+00:00"
+}

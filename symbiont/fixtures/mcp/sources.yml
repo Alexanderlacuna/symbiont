@@ -1,0 +1,176 @@
+# MCP SOURCES — the ONE definition site for the generic MCP arm (symbiont/adapters/mcp_source.py).
+#
+# WHAT THIS FILE IS: the roster an operator edits. Nothing about a source lives in the code — the
+# transport (stdio command+args, or an HTTP endpoint), the tool name, the argument mapping, the
+# RESPONSE MAPPING (JSON pointers), the COUNT SOURCE and the pin are all here. The adapter validates
+# this file TOTAL-ly: an unknown key, a missing key, an unknown transport, an unknown count kind, an
+# empty licence_text is REFUSED BY NAME before a socket or a child process exists.
+#
+# THE THREE SERVERS BELOW ARE FIXTURES (symbiont/fixtures/mcp/server_*.py), shipped in-tree because a
+# generic adapter with no second server to run against is exactly the state this row was measured
+# in. They are three on purpose:
+#
+#   fixture_alpha   SHAPE A  text-content JSON, /result/hits + /result/total (count in the response)
+#                   — and a drift switch (MCP_FIXTURE_SHAPE) that RENAMES the shape, which is what
+#                   REFUSED[schema-drift] is proved against
+#   fixture_beta    SHAPE B  structuredContent, /data/docs + a SECOND TOOL for the count
+#                   (beta_count) — no key name, no envelope and no record field shared with alpha
+#   fixture_gamma   NO COUNT AT ALL, and therefore the two halves of the count rule in one file:
+#                   fixture_gamma_source is REFUSED[no-count-endpoint] BY NAME at load, and
+#                   fixture_gamma_tool runs as a TOOL (records stamped published: false)
+#
+# A LIVE source is an entry of the same shape pointed at a real server. Nothing else changes: no
+# code, no import, no registry list. `{FARM}` in a stdio command/arg is the farm root.
+version: 1
+
+sources:
+  - id: fixture_alpha
+    adapter: mcp_source
+    enabled: true
+    note: "SHAPE A: text content, /result/hits, count field /result/total. The count rule's 'count field in the response' arm."
+    mode: source
+    transport:
+      kind: stdio
+      command: python3
+      args: ["{FARM}/symbiont/fixtures/mcp/server_alpha.py"]
+      call_timeout_s: 30
+    request:
+      tool: alpha_search
+      kind: query
+      arguments:
+        q: "{TERM}"
+        max: 25
+    response:
+      records: /result/hits
+      fields:
+        id: /acc
+        key: /symbol
+        title: /title
+      xrefs:
+        alpha_cross: /cross
+      coords:
+        chrom: /coords/chr
+        start: /coords/start
+        end: /coords/end
+      optional: [title]
+      total: /result/total
+    count:
+      kind: response_field
+      pointer: /result/total
+    pin:
+      package: fixture-alpha-mcp
+      version: "1.0.0"
+      tool_description_sha256: ""
+    licence_text: "fixture data: no rights claimed (in-tree fixture, never published)"
+    licence_url: ""
+    budget:
+      tool_calls: 8
+      wall_s: 60
+
+  - id: fixture_beta
+    adapter: mcp_source
+    enabled: true
+    note: "SHAPE B: structuredContent, /data/docs, no key name in common with alpha, and the count is a SECOND TOOL (beta_count). The count rule's 'count tool' arm."
+    mode: source
+    transport:
+      kind: stdio
+      command: python3
+      args: ["{FARM}/symbiont/fixtures/mcp/server_beta.py"]
+      call_timeout_s: 30
+    request:
+      tool: beta_search
+      kind: query
+      arguments:
+        term: "{TERM}"
+        page_size: 25
+    response:
+      records: /data/docs
+      fields:
+        id: /pid
+        key: /label
+        title: /headline
+      optional: [title]
+      total: /data/available
+    count:
+      kind: count_tool
+      tool: beta_count
+      arguments:
+        term: "{TERM}"
+      pointer: /counts/documents
+    pin:
+      package: fixture-beta-mcp
+      version: "2.3.1"
+      tool_description_sha256: ""
+    licence_text: "fixture data: no rights claimed (in-tree fixture, never published)"
+    licence_url: ""
+    budget:
+      tool_calls: 8
+      wall_s: 60
+
+  - id: fixture_gamma_source
+    adapter: mcp_source
+    enabled: true
+    note: "THE REFUSAL: the same no-count server used as a SOURCE. Refused BY NAME (REFUSED[no-count-endpoint]) at load, before a request leaves the box — it is the same rule every other source obeys, so 'it is MCP' buys no exemption."
+    mode: source
+    transport:
+      kind: stdio
+      command: python3
+      args: ["{FARM}/symbiont/fixtures/mcp/server_gamma.py"]
+      call_timeout_s: 30
+    request:
+      tool: gamma_lookup
+      kind: question
+      arguments:
+        question: "{TERM}"
+    response:
+      records: /items
+      fields:
+        id: /iri
+        key: /name
+        title: /kind
+      optional: [title]
+    count:
+      kind: none
+    pin:
+      package: fixture-gamma-mcp
+      version: "0.4.0"
+      tool_description_sha256: ""
+    licence_text: "fixture data: no rights claimed (in-tree fixture, never published)"
+    licence_url: ""
+    budget:
+      tool_calls: 4
+      wall_s: 60
+
+  - id: fixture_gamma_tool
+    adapter: mcp_source
+    enabled: true
+    note: "THE ALLOWED HALF: the same no-count server used as a TOOL (mode: tool). It runs, its records are stamped published: false and count_source: none, and verify() says in its own words that this was a tool call, never a claim."
+    mode: tool
+    transport:
+      kind: stdio
+      command: python3
+      args: ["{FARM}/symbiont/fixtures/mcp/server_gamma.py"]
+      call_timeout_s: 30
+    request:
+      tool: gamma_lookup
+      kind: question
+      arguments:
+        question: "{TERM}"
+    response:
+      records: /items
+      fields:
+        id: /iri
+        key: /name
+        title: /kind
+      optional: [title]
+    count:
+      kind: none
+    pin:
+      package: fixture-gamma-mcp
+      version: "0.4.0"
+      tool_description_sha256: ""
+    licence_text: "fixture data: no rights claimed (in-tree fixture, never published)"
+    licence_url: ""
+    budget:
+      tool_calls: 4
+      wall_s: 60

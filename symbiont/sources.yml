@@ -1,0 +1,128 @@
+# SOURCES — the ONE definition site per source (req-P0-SOURCES-YML-AND-THE-FOUR-REFUSALS-T5).
+#
+# An adapter file (symbiont/adapters/<name>.py) PARSES and NORMALISES. It carries no endpoint, no
+# licence URL, no rate limit and no budget: all of that is here, so an operator can
+#   · repoint a mirror        -> edit base_url (and nothing else: every other endpoint is relative),
+#   · change a rate limit     -> edit rate_limit,
+#   · switch a source off     -> enabled: false (skipped BY NAME, the reason in the run record),
+#   · cap a run               -> edit budget (the run stops at the cap and writes the reason),
+#   · clear a quarantine      -> NOT by hand: re-admit through the card —
+#                               python3 -m symbiont.loop --readmit <id> --card <card file>
+#                               (the card names the source and WHAT CHANGED; without it the
+#                               re-admission is REFUSED by name),
+# without touching code.
+#
+# The contract (symbiont/contract.py::check_registry) REFUSES at load time, BY NAME:
+#   · a source enabled here whose `adapter` has no adapter module, and
+#   · an adapter module with no entry here,
+# because either one means the config and the code disagree about what exists, and a run over that
+# disagreement would silently publish half a claim.
+#
+# REQUIRED PER SOURCE (an unknown key is refused by name):
+#   id            operator-facing name: the key of state/, raw/, runs/ and the run record
+#   adapter       the adapter module that must exist (symbiont/adapters/<adapter>.py, ADAPTER.name)
+#   enabled       true = harvested; false = skipped by name, reason in the run record
+#   base_url      the host+path every RELATIVE endpoint is resolved against — the mirror lever
+#   endpoints     {name: url-or-relative-path}; "." means base_url itself; an absolute http(s)
+#                 URL is used as written (a metadata endpoint on another host)
+#   storage       {endpoint: {class: store | point-at, reason: …}} — the STORE/POINT-AT tier,
+#                 ENFORCED IN CODE (req-P1-POINT-AT-ENFORCED-IN-CODE-the-tiers), not policy text:
+#                   class store      the payload lands in raw/, content-addressed, as always;
+#                   class point-at   the loop REFUSES to write the payload into raw/ and instead
+#                                    records the accession plus a fetch recipe (url, params,
+#                                    sha256 of the recipe) under pointat/<source>/<release>/ in
+#                                    the store, and the door re-fetches it ON DEMAND:
+#                                    python3 -m symbiont.resolve <source>/<release>/<reskey>
+#                 reason  WHY, in the two words the policy allows — the licence forbids storage,
+#                         or the bulk is above a declared size. REQUIRED for point-at, optional
+#                         for store.
+#                 A source whose class is missing is REFUSED BY NAME at load (never defaulted to
+#                 store), and a point-at class with no reason is refused the same way.
+#   rate_limit    {requests_per_minute, min_interval_s} — enforced in symbiont/http.py; the waits
+#                 are slept AND counted in the run record (a limit obeyed silently cannot be audited)
+#   licence_url   the page whose own wording is read and hashed at discovery (T6)
+#   licence_text  what the terms ARE, recorded with the page's sha256 in the run record
+#   staleness     {policy_days}: a stored release older than this raises the named finding
+#                 SOURCE-STALE, and "stale since <date>" is stamped on the claim (T7)
+#   budget        {requests, bytes, wall_s} per source per run — over it the source REFUSES with
+#                 code `budget` and the run record says which cap and which count (T5)
+#   quarantined   null, or {reason, at, status} WRITTEN BY THE LOOP (T9) on a 404/410 (code
+#                 `source-gone`), a count check failed twice in a row (`count-mismatch`) or a
+#                 rate-budget overage twice in a row (`budget`); the reason carries the EVIDENCE
+#                 (the failing runs). While it is set the loop skips the source BY NAME — zero
+#                 requests — and the skip line `skipped: quarantined since <date>: <reason>` lands
+#                 in the run record and in the digest (store/digest/<id>.md). A quarantine with
+#                 no reason is REFUSED by name at load time (never an unexplained skip), and
+#                 re-admission goes back through the card (see above).
+#
+# THIS FILE IS REWRITTEN BY THE LOOP when a source is quarantined — only the `quarantined:` block of
+# the offending source changes, and everything above this line is preserved verbatim. Every key has a
+# fixed order (id, adapter, enabled, note, base_url, endpoints, storage, rate_limit, licence_url,
+# licence_text, staleness, budget, quarantined), so the rewrite is a one-hunk diff, not a reformat.
+#
+# Exit codes of `python3 -m symbiont.loop`: 0 published and verified · 1 a source's count disagreed
+# · 2 refused before the run (config/registry/hard error; also a re-admission refused without its
+# card) · 3 a source REFUSED (budget | licence-unknown | source-gone | source-unreachable |
+# count-mismatch — the last two quarantines) or the claim could not be joined.
+
+version: 1
+
+sources:
+  - id: ensembl_biomart
+    adapter: ensembl_biomart
+    enabled: true
+    note: "id authority: Ensembl ids + coordinates. The data query and the count query are the SAME request (count=1), built onto base_url by the adapter, so a mirror that serves /biomart/martservice is repointed by changing base_url alone."
+    base_url: https://www.ensembl.org/biomart/martservice
+    endpoints:
+      mart: "."
+      metadata: "https://rest.ensembl.org/info/software?content-type=application/json"
+    storage:
+      mart:
+        class: store
+        reason: "licence permits storage: no restrictions on access or use"
+      metadata:
+        class: store
+        reason: "licence permits storage: no restrictions on access or use"
+    rate_limit:
+      requests_per_minute: 20
+      min_interval_s: 3.0
+    licence_url: https://www.ensembl.org/info/about/legal/disclaimer.html
+    licence_text: "Ensembl data: no restrictions on access or use"
+    staleness:
+      policy_days: 120
+    budget:
+      requests: 12
+      bytes: 40000000
+      wall_s: 600
+    quarantined: null
+  - id: mgi
+    adapter: mgi
+    enabled: true
+    note: "xref provider: symbols, MGI accessions, MGI's own Ensembl xrefs, the withdrawn-marker list. Both release files are RELATIVE to base_url, so a mirror of the reports directory is repointed by changing base_url alone. MGI publishes no count endpoint and its release stamp is MRK_ENSEMBL.rpt's own Last-Modified, which is why metadata is that same file."
+    base_url: https://www.informatics.jax.org/downloads/reports/
+    endpoints:
+      metadata: "MRK_ENSEMBL.rpt"
+      mrk_ensembl: "MRK_ENSEMBL.rpt"
+      mrk_list1_gz: "MRK_List1.rpt.gz"
+    storage:
+      metadata:
+        class: store
+        reason: "licence permits storage: CC-BY 4.0 (attribution required)"
+      mrk_ensembl:
+        class: store
+        reason: "licence permits storage: CC-BY 4.0 (attribution required)"
+      mrk_list1_gz:
+        class: store
+        reason: "licence permits storage: CC-BY 4.0 (attribution required)"
+    rate_limit:
+      requests_per_minute: 20
+      min_interval_s: 3.0
+    licence_url: https://www.informatics.jax.org/mgihome/other/copyright.shtml
+    licence_text: "MGI data and annotations: CC-BY 4.0 (attribution required)"
+    staleness:
+      policy_days: 120
+    budget:
+      requests: 12
+      bytes: 400000000
+      wall_s: 900
+    quarantined: null

@@ -1,0 +1,833 @@
+"""THE FOUR DIGESTS — release-watch · staleness · gaps · suggest (req-P1-THE-FOUR-DIGESTS).
+
+DESIGN-STATION.md §4 names four digests — RELEASE-WATCH, STALENESS, GAPS, SUGGEST — and until
+this row none had a schema. The schema, the cadence and the refusal rules live on ONE page,
+`docs/DIGESTS.md`; this module is their only implementation. The mapping (four digests,
+three kinds of file):
+
+  release-watch + staleness   digest/<source>.md   ONE block appended PER RUN per source. The
+                                                   release line IS the staleness digest: our
+                                                   stored release vs the upstream metadata,
+                                                   moved / stale / age_days / policy_days (T7).
+  gaps                        digest/gaps.md       REWRITTEN per run and by the daily pass.
+  suggest                     digest/suggest.md    REWRITTEN per run and by the daily pass —
+                                                   ranked options with cost, licence and the
+                                                   question each would answer. It recommends,
+                                                   it NEVER chooses.
+
+THE REFUSAL RULES are enforced by `verify` (and `verify` is what the selftest and the daily
+pass run — a digest is a measurement, not prose):
+
+  a digest with no numbers is REFUSED (prose is not a digest)   REFUSED[digest-no-numbers]
+  a digest whose counts cannot be reproduced by its own query   REFUSED[digest-not-reproducible]
+  a digest with a missing schema-mandated count is REFUSED      REFUSED[digest-missing-count]
+  BY NAME (the refusal names the file)
+  and (NSC) a suggest digest that states a decision is REFUSED  REFUSED[suggest-decision]
+
+LINE GRAMMAR (all digest files):
+
+    - <label>: <value>
+        why: <optional commentary>          (any number, between the label and its query)
+        query: <a shell command, run with cwd = the store root>
+
+`value` is EXACTLY what `sh -c <query>` prints. A reader re-runs the query and gets the value
+back, or the digest is refused. A query may span lines (a `python3 -c '…'` payload carries its
+own newlines); indented `why:` / `note:` lines are commentary and carry no reproduction duty
+(ages and timestamps are time-dependent facts, quoted not measured).
+
+Quoting law: digest values and queries are ASCII (the one exception is licence wording quoted
+verbatim from a sources.yml, reproduced verbatim by its query), and every generated `python3 -c`
+payload uses DOUBLE quotes only — the payload is wrapped in single quotes, so a single quote
+inside it would end it early. `_py()` asserts this rather than trusting the writer.
+
+Usage:
+    python3 -m symbiont.digests show --store symbiont/store gaps
+    python3 -m symbiont.digests verify symbiont/store/digest/gaps.md symbiont/store/digest/suggest.md
+    python3 -m symbiont.digests write --store symbiont/store      # the daily refresh pass
+
+(`verify` takes NO --store: it derives the store from each file's own path, `digest/<name>.md`
+-> the store is the parent of `digest/`, and runs every query with cwd = that store — so the
+file it checks and the store it measures can never disagree.)
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+SEP = " | "                                   # ASCII only: digests are compared byte for byte
+
+REQUIRED = {                                   # schema-mandated count lines (docs/DIGESTS.md §3)
+    "gaps.md": ("genes-without-phenotypes", "papers-without-abstracts",
+                "ids-without-xref", "sources-with-no-release"),
+    "suggest.md": ("gaps-now",),
+    "source": ("release", "counts", "changed", "refusals", "last-success"),
+}
+
+DECISION_RE = re.compile(                     # a suggest digest ranks options; it never decides
+    r"\b(we|i)\s+(will|must|should|shall|choose|decide|fetch)\b|\bchosen\b|^- decision:",
+    re.IGNORECASE,
+)
+
+MEASURED_RE = re.compile(r"^- (?P<label>[a-z0-9-]+): (?P<value>.*)$")
+QUERY_RE = re.compile(r"^    query: (?P<cmd>.*)$")
+NOTE_RE = re.compile(r"^    (why|note): ")
+HEADER_RE = re.compile(r"^#")
+
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_STORE = os.path.join(APP_ROOT, "store")
+
+
+# ---------------------------------------------------------------- helpers
+def _q(store: str, cmd: str, timeout: int = 30) -> tuple[int, str]:
+    """Run a digest query exactly as `verify` will: sh -c, cwd=store."""
+    p = subprocess.run(["sh", "-c", cmd], cwd=store, capture_output=True, text=True,
+                       timeout=timeout)
+    return p.returncode, p.stdout.strip("\n")
+
+
+def _py(code: str) -> str:
+    assert "'" not in code, f"digest query code must not contain single quotes: {code[:120]}"
+    return f"python3 -c '{code}'"
+
+
+def _lit(obj) -> str:
+    """A JSON literal (double quotes) safe inside a single-quoted python -c payload."""
+    return json.dumps(obj)
+
+
+def _load(path: str):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _sources_path(record: dict) -> str:
+    """The sources.yml behind the run, with a fallback to the module own copy (the one definition
+    site) when the run happened somewhere the farm has since moved."""
+    p = record.get("sources_path") or ""
+    return p if os.path.isfile(p) else os.path.join(APP_ROOT, "sources.yml")
+
+
+def _store_cfg(store: str, record: dict) -> str:
+    """Persist the sources.yml THE RUN USED beside the run (store/sources.yml) and hand back its
+    store-relative name. The suggest digest's cost and licence lines cite that config's budget and
+    licence text; before this the emitted query pinned the run's absolute path, so a store COPIED
+    anywhere else (the lane's own evidence copy, a moved farm) answered its own cost line with
+    'the query exited 1' and `verify` refused it — a digest whose counts cannot be reproduced by
+    its own query, which is rule 2, caused by the writer rather than the reader (measured
+    2026-11-10, FINDING F1). Copied first, so both pages' queries read `sources.yml` relative to
+    the store root they already run in."""
+    p = _sources_path(record)
+    dst = os.path.join(store, "sources.yml")
+    if os.path.isfile(p) and os.path.abspath(p) != dst:
+        shutil.copyfile(p, dst)
+    return "sources.yml"
+
+
+def _cfg_prelude(store: str, record: dict) -> str:
+    """The emitted-query prelude that opens the run's config from THE STORE, falling back to the
+    recorded path (a store written before store/sources.yml existed still reproduces)."""
+    return ("import json, os, yaml\n"
+            "_c = [\"sources.yml\", %s]\n" % _lit(_sources_path(record)) +
+            "cfg = yaml.safe_load(open(next(x for x in _c if os.path.exists(x))))\n")
+
+
+def _view_rel(store: str, record: dict) -> str:
+    """The published view, relative to the store — the run own publish path if it still lives in
+    THIS store, else the newest view on disk (a moved store must not measure a dead path).
+    `store` is absolutised first: the loop may be handed a relative --store, and commonpath
+    refuses to mix an absolute view path with it (measured 2026-11-10, FINDING F2 — the crash
+    killed the run AFTER publish, so a published run wrote no digest and no run record)."""
+    store = os.path.abspath(store)
+    p = (record.get("publish") or {}).get("path") or ""
+    if p and os.path.isfile(p) and os.path.commonpath([os.path.abspath(p), store]) == store:
+        return os.path.relpath(p, store)
+    vs = sorted(glob.glob(os.path.join(store, "view", "*.v*.tsv")))
+    return os.path.relpath(vs[-1], store) if vs else ""
+
+
+def _pub_rel(store: str) -> str:
+    ps = sorted(glob.glob(os.path.join(store, "literature", "publications", "publication.v*.tsv")))
+    return os.path.relpath(ps[-1], store) if ps else ""
+
+
+def _live_queries(store: str, record: dict) -> dict:
+    """The shell commands behind every live count — the same strings land in the digests, so a
+    digest value is by construction what its own query prints."""
+    view, pub = _view_rel(store, record), _pub_rel(store)
+    ids = sorted(record.get("sources") or {})
+    return {
+        "markers": f"tail -n +2 {view} | wc -l" if view else "echo 0",
+        "retired": "tail -n +2 xref/retired.tsv 2>/dev/null | wc -l",
+        "unresolved": "awk -F'\\t' 'NR>1 && $4==\"unresolved\"' xref/xref.tsv 2>/dev/null | wc -l",
+        "papers": f"tail -n +2 {pub} | wc -l" if pub else "echo 0",
+        "papers-no-abstract": (f"awk -F'\\t' 'NR>1 && $9==\"\"' {pub} 2>/dev/null | wc -l"
+                               if pub else "echo 0"),
+        "no-release": _py(
+            "import json, os\n"
+            f"ids = {_lit(ids)}\n"
+            "n = 0\n"
+            "for sid in ids:\n"
+            "    p = os.path.join(\"state\", sid + \".json\")\n"
+            "    ok = os.path.exists(p)\n"
+            "    if ok:\n"
+            "        ok = bool(json.load(open(p)).get(\"release\"))\n"
+            "    n += 0 if ok else 1\n"
+            "print(n)"),
+    }
+
+
+def _int(store: str, cmd: str) -> int:
+    rc, out = _q(store, cmd)
+    if rc != 0:
+        raise RuntimeError(f"digest query failed (rc={rc}): {cmd}")
+    return int(out.strip() or 0)
+
+
+# ---------------------------------------------------------------- collect (per run)
+def _prior_digest_run(store: str, run_id: str):
+    """The most recent PRIOR run record carrying a digest section — the diff base."""
+    best = None
+    for p in glob.glob(os.path.join(store, "runs", "*.json")):
+        try:
+            r = _load(p)
+        except Exception:
+            continue
+        if r.get("run_id") == run_id or r.get("kind") == "agent-task":
+            continue
+        if not isinstance(r.get("digest"), dict) or "stats" not in r["digest"]:
+            continue
+        key = r.get("finished_at") or r.get("started_at") or ""
+        if best is None or key > best[0]:
+            best = (key, r)
+    return best[1] if best else None
+
+
+def collect(store: str, record: dict) -> dict:
+    """Measure the store NOW (by RUNNING the queries, never by guessing) and pin the numbers into
+    the run record's digest section, so the per-run digest blocks reproduce every count from
+    immutable run records for as long as runs/ is kept."""
+    qs = _live_queries(store, record)
+    stats = {k: _int(store, qs[k])
+             for k in ("markers", "retired", "unresolved", "papers", "papers-no-abstract")}
+    return {
+        "stats": stats,
+        "gaps": {
+            "genes-without-phenotypes": stats["markers"],
+            "papers-without-abstracts": stats["papers-no-abstract"],
+            "ids-without-xref": stats["unresolved"],
+            "sources-with-no-release": _int(store, qs["no-release"]),
+        },
+        "prior_run": (_prior_digest_run(store, record.get("run_id", "")) or {}).get("run_id"),
+        "queries": qs,
+    }
+
+
+# ---------------------------------------------------------------- release-watch + staleness
+def _header_status(record: dict, sid: str) -> str:
+    src = record["sources"][sid]
+    if src.get("skipped"):
+        return f"skipped({src['skipped'].get('reason', 'unknown')})"
+    if src.get("refused"):
+        return f"refused({src['refused'].get('code', 'unknown')})"
+    return record.get("status") or "unknown"
+
+
+def _release_line(store: str, record: dict, sid: str) -> tuple[str, str]:
+    """(value, query) for `release:` — the staleness digest per DESIGN §4: the release we had
+    STORED, the release this run now HOLDS (current), and what the UPSTREAM metadata endpoint
+    states now, plus moved / stale / age / policy (T7). All fields reproduce from the run record."""
+    src = record["sources"][sid]
+    st = src.get("stale")
+    if st:
+        disc = src.get("discover") or {}
+        current = disc.get("release") or st["upstream_release"] or "none"
+        value = ("stored=%s current=%s upstream=%s moved=%s stale=%s age_days=%s policy_days=%s"
+                 % (st["stored_release"] or "none", current, st["upstream_release"] or "unknown",
+                    "yes" if st["upstream_moved"] else "no", "yes" if st["stale"] else "no",
+                    "none" if st["age_days"] is None else st["age_days"],
+                    "none" if not st["policy_days"] else st["policy_days"]))
+        code = (
+            "import json\n"
+            f"src = json.load(open(\"runs/{record['run_id']}.json\"))[\"sources\"][\"{sid}\"]\n"
+            "st = src[\"stale\"]; d = src.get(\"discover\") or {}\n"
+            "print(\"stored=%s current=%s upstream=%s moved=%s stale=%s age_days=%s "
+            "policy_days=%s\" % (\n"
+            "    st[\"stored_release\"] or \"none\",\n"
+            "    d.get(\"release\") or st[\"upstream_release\"] or \"none\",\n"
+            "    st[\"upstream_release\"] or \"unknown\",\n"
+            "    \"yes\" if st[\"upstream_moved\"] else \"no\",\n"
+            "    \"yes\" if st[\"stale\"] else \"no\",\n"
+            "    \"none\" if st[\"age_days\"] is None else st[\"age_days\"],\n"
+            "    \"none\" if not st[\"policy_days\"] else st[\"policy_days\"]))")
+        return value, _py(code)
+    # the source died before discover() measured anything (skipped, or refused at/before
+    # discovery): quote our stored release and PIN it — nothing upstream was seen to compare
+    # against, and the refusals line says why.
+    sp = os.path.join(store, "state", f"{sid}.json")
+    ours = (_load(sp).get("release") or "none") if os.path.exists(sp) else "none"
+    value = (f"stored={ours} current={ours} upstream=unknown moved=no stale=unknown "
+             f"age_days=none policy_days=none")
+    return value, _py(f"print({_lit(value)})")
+
+
+def _counts_line(record: dict, sid: str) -> tuple[str, str]:
+    v = (record["sources"][sid] or {}).get("verify")
+    if v:
+        code = (
+            "import json\n"
+            f"v = json.load(open(\"runs/{record['run_id']}.json\"))[\"sources\"]"
+            f"[\"{sid}\"][\"verify\"]\n"
+            "print(\"ours=%s theirs=%s agree=%s\" % (v[\"ours\"], v[\"source_count\"],\n"
+            "      \"yes\" if v[\"ok\"] else \"no\"))")
+        return (f"ours={v['ours']} theirs={v['source_count']} "
+                f"agree={'yes' if v['ok'] else 'no'}"), _py(code)
+    reason = (((record["sources"][sid].get("skipped") or {}).get("reason"))
+              or ((record["sources"][sid].get("refused") or {}).get("code"))
+              or "no verify")
+    code = (
+        "import json\n"
+        f"s = json.load(open(\"runs/{record['run_id']}.json\"))[\"sources\"][\"{sid}\"]\n"
+        "print(\"none (%s)\" % ((s.get(\"skipped\") or {}).get(\"reason\")\n"
+        "      or (s.get(\"refused\") or {}).get(\"code\") or \"no verify\"))")
+    return f"none ({reason})", _py(code)
+
+
+def _records_part(prior: dict, record: dict, sid: str) -> str:
+    ra = ((prior["sources"].get(sid) or {}).get("normalise") or {}).get("records")
+    rb = ((record["sources"].get(sid) or {}).get("normalise") or {}).get("records")
+    if ra is None or rb is None:
+        return "records(ours) n/a"
+    return "records(ours) %+d (%d->%d)" % (rb - ra, ra, rb)
+
+
+def _changed_line(record: dict, sid: str, prior: dict | None) -> tuple[str, str]:
+    """`changed:` — the what-changed line, COMPUTED FROM TWO REAL RUN RECORDS, never invented.
+    Both runs' numbers are pinned in their own run records, so the line reproduces immutably."""
+    rid = record["run_id"]
+    cur = record["digest"]["stats"]
+    if prior is None:
+        rec = ((record["sources"].get(sid) or {}).get("normalise") or {}).get("records")
+        value = ("first run - markers %d - retired %d - papers %d - records(ours) %s"
+                 % (cur["markers"], cur["retired"], cur["papers"],
+                    rec if rec is not None else "n/a"))
+        code = (
+            "import json\n"
+            f"b = json.load(open(\"runs/{rid}.json\"))\n"
+            "s = b[\"digest\"][\"stats\"]\n"
+            f"rec = (b[\"sources\"].get({_lit(sid)}, {{}}).get(\"normalise\") or {{}}).get(\"records\")\n"
+            "print(\"first run - markers %d - retired %d - papers %d - records(ours) %s\"\n"
+            "      % (s[\"markers\"], s[\"retired\"], s[\"papers\"],\n"
+            "         rec if rec is not None else \"n/a\"))")
+        return value, _py(code)
+    pas, cus = prior["digest"]["stats"], record["digest"]["stats"]
+    value = SEP.join([
+        "markers %+d (%d->%d)" % (cus["markers"] - pas["markers"], pas["markers"], cus["markers"]),
+        "retired %+d (%d->%d)" % (cus["retired"] - pas["retired"], pas["retired"], cus["retired"]),
+        "papers %+d (%d->%d)" % (cus["papers"] - pas["papers"], pas["papers"], cus["papers"]),
+        _records_part(prior, record, sid)])
+    code = (
+        "import json\n"
+        f"a = json.load(open(\"runs/{prior['run_id']}.json\"))\n"
+        f"b = json.load(open(\"runs/{rid}.json\"))\n"
+        "sa = a[\"digest\"][\"stats\"]; sb = b[\"digest\"][\"stats\"]\n"
+        f"ra = (a[\"sources\"].get({_lit(sid)}, {{}}).get(\"normalise\") or {{}}).get(\"records\")\n"
+        f"rb = (b[\"sources\"].get({_lit(sid)}, {{}}).get(\"normalise\") or {{}}).get(\"records\")\n"
+        "parts = [\"markers %+d (%d->%d)\" % (sb[\"markers\"]-sa[\"markers\"], sa[\"markers\"], sb[\"markers\"]),\n"
+        "         \"retired %+d (%d->%d)\" % (sb[\"retired\"]-sa[\"retired\"], sa[\"retired\"], sb[\"retired\"]),\n"
+        "         \"papers %+d (%d->%d)\" % (sb[\"papers\"]-sa[\"papers\"], sa[\"papers\"], sb[\"papers\"])]\n"
+        "parts.append(\"records(ours) n/a\" if (ra is None or rb is None)\n"
+        "             else \"records(ours) %+d (%d->%d)\" % (rb-ra, ra, rb))\n"
+        "print(\" | \".join(parts))")
+    return value, _py(code)
+
+
+def _refusals_line(record: dict, sid: str) -> tuple[str, str]:
+    codes = [r["code"] for r in record.get("refusals", []) if r.get("source") == sid]
+    value = "%d %s" % (len(codes), ",".join(codes) if codes else "none")
+    code = (
+        "import json\n"
+        f"r = json.load(open(\"runs/{record['run_id']}.json\"))[\"refusals\"]\n"
+        f"xs = [x[\"code\"] for x in r if x.get(\"source\") == {_lit(sid)}]\n"
+        "print(\"%d %s\" % (len(xs), \",\".join(xs) if xs else \"none\"))")
+    return value, _py(code)
+
+
+def _parse_iso(s: str):
+    try:
+        return dt.datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _last_success(store: str, record: dict, sid: str) -> tuple[str, str, str]:
+    """(value, query, note) — the age is a time-dependent fact: quoted in a note, not measured."""
+    src = record["sources"][sid]
+    if (src.get("verify") or {}).get("ok"):
+        best, best_fin = record["run_id"], record.get("finished_at")
+    else:
+        best, best_fin = None, None
+        for p in sorted(glob.glob(os.path.join(store, "runs", "*.json")), reverse=True):
+            try:
+                r = _load(p)
+            except Exception:
+                continue
+            if r.get("kind") == "agent-task" or r.get("run_id") == record["run_id"]:
+                continue
+            if ((r.get("sources", {}).get(sid, {}).get("verify") or {}).get("ok")):
+                best, best_fin = r["run_id"], r.get("finished_at")
+                break
+    if not best:
+        return "none (no successful run yet)", _py("print(\"none (no successful run yet)\")"), ""
+    code = (
+        "import json\n"
+        f"r = json.load(open(\"runs/{best}.json\"))\n"
+        "print(\"%s at %s\" % (r[\"run_id\"], r[\"finished_at\"]))")
+    note = ""
+    fin = _parse_iso(best_fin or "")
+    if fin:
+        mins = max(0, round((dt.datetime.now(dt.timezone.utc) - fin).total_seconds() / 60))
+        note = f"note: age of the last successful run at write: {mins // 60}h{mins % 60}m"
+    return f"{best} at {best_fin}", _py(code), note
+
+
+def _release_watch_block(store: str, record: dict, sid: str, prior: dict | None) -> str:
+    st, sq = _release_line(store, record, sid)
+    cv, cq = _counts_line(record, sid)
+    ch, chq = _changed_line(record, sid, prior)
+    rf, rfq = _refusals_line(record, sid)
+    ls, lsq, note = _last_success(store, record, sid)
+    out = [f"## run {record['run_id']} - {_header_status(record, sid)} - "
+           f"finished {record.get('finished_at', '')}",
+           f"- release: {st}", f"    query: {sq}",
+           f"- counts: {cv}", f"    query: {cq}",
+           f"- changed: {ch}", f"    query: {chq}",
+           f"- refusals: {rf}", f"    query: {rfq}",
+           f"- last-success: {ls}", f"    query: {lsq}"]
+    if note:
+        out.append(f"    {note}")
+    return "\n".join(out) + "\n"
+
+
+# ---------------------------------------------------------------- gaps
+def _gaps_doc(record: dict, header: str) -> str:
+    g, st, qs = record["digest"]["gaps"], record["digest"]["stats"], record["digest"]["queries"]
+    return "\n".join([
+        header,
+        "- genes-without-phenotypes: %d" % g["genes-without-phenotypes"],
+        "    why: no phenotype view exists in this store, so every published gene carries no "
+        "phenotype annotation here (when the phenotypes arm lands the query becomes the join)",
+        f"    query: {qs['markers']}",
+        "- papers-without-abstracts: %d" % g["papers-without-abstracts"],
+        "    why: publication rows whose abstract column is empty (never returned, or withheld "
+        "per-record for licence - the reason is kept in the row itself)",
+        f"    query: {qs['papers-no-abstract']}",
+        "- ids-without-xref: %d" % g["ids-without-xref"],
+        "    why: xref keys that failed to pair (xref.tsv status=unresolved)",
+        f"    query: {qs['unresolved']}",
+        "- sources-with-no-release: %d" % g["sources-with-no-release"],
+        "    why: sources of this run with no state file or no recorded release",
+        f"    query: {qs['no-release']}",
+        "    note: published markers %d, retired rows %d, publications %d - the store the "
+        "queries ran against" % (st["markers"], st["retired"], st["papers"]),
+        ""]) + "\n"
+
+
+# ---------------------------------------------------------------- suggest
+def _lit_cfg() -> dict:
+    import yaml
+    p = os.path.join(APP_ROOT, "literature", "sources.yml")
+    if not os.path.isfile(p):
+        return {}
+    with open(p, encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh)
+    return (raw.get("sources") or [{}])[0]
+
+
+def _provider_cfg(record: dict, sid: str) -> dict:
+    import yaml
+    with open(_sources_path(record), encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh)
+    for s in raw.get("sources", []):
+        if s.get("id") == sid:
+            return s
+    return {}
+
+
+def _latest_measured_run(store: str, sid: str, sub: str = ""):
+    """The latest run record in which <sid> actually ran — a measured cost the page may cite.
+    The gene arm nests cost/verify under sources[<sid>]; the literature arm carries them at
+    the top level (one source per run) — both shapes are read, nothing is invented."""
+    d = os.path.join(store, sub, "runs") if sub else os.path.join(store, "runs")
+    for p in sorted(glob.glob(os.path.join(d, "*.json")), reverse=True):
+        try:
+            r = _load(p)
+        except Exception:
+            continue
+        if r.get("kind") == "agent-task":
+            continue
+        if not sub:
+            s = (r.get("sources") or {}).get(sid) or {}
+            if s.get("cost") is not None and (s.get("verify") or {}).get("ok"):
+                return r
+        else:
+            if r.get("cost") and all(v.get("ok") for v in (r.get("verify") or [])
+                                     if isinstance(v, dict) and "ok" in v):
+                return r
+    return None
+
+
+def _measured_gene(store: str, record: dict, sid: str) -> tuple[str, str | None]:
+    """A cost estimate that cites two real things: the sources.yml budget and a measured run."""
+    cfg = _provider_cfg(record, sid)
+    b = cfg.get("budget") or {}
+    budget = (f"within the sources.yml budget for {sid} (requests<={b.get('requests')}, "
+              f"bytes<={b.get('bytes')}, wall_s<={b.get('wall_s')})")
+    m = _latest_measured_run(store, sid)
+    if not m:
+        return f"{budget}; no measured {sid} run in the store yet", None
+    c = m["sources"][sid]["cost"]
+    value = (f"{budget}; measured last {sid} run {m['run_id']} "
+             f"(requests={c.get('requests')}, bytes_in={c.get('bytes_in')}, wall_s={c.get('wall_s')})")
+    code = (
+        _cfg_prelude(store, record) +
+        f"e = [s for s in cfg[\"sources\"] if s[\"id\"] == {_lit(sid)}][0]\n"
+        "b = e[\"budget\"]\n"
+        f"m = json.load(open({_lit(os.path.join('runs', m['run_id'] + '.json'))}))\n"
+        f"c = m[\"sources\"][{_lit(sid)}][\"cost\"]\n"
+        "print(\"within the sources.yml budget for %s (requests<=%s, "
+        "bytes<=%s, wall_s<=%s); measured last %s run %s (requests=%s, bytes_in=%s, wall_s=%s)\"\n"
+        "      % (" + f"{_lit(sid)}, b[\"requests\"], b[\"bytes\"], b[\"wall_s\"], {_lit(sid)}, "
+        f"m[\"run_id\"], c[\"requests\"], c[\"bytes_in\"], c[\"wall_s\"]))")
+    return value, _py(code)
+
+
+def _licence_gene(store: str, record: dict, sid: str) -> tuple[str, str]:
+    cfg = _provider_cfg(record, sid)
+    txt = cfg.get("licence_text") or "not recorded"
+    value = (f"{txt} - recorded in sources.yml ({sid}); a NEW endpoint own terms "
+             f"are read at discovery before any fetch (T6)")
+    code = (
+        _cfg_prelude(store, record) +
+        f"e = [s for s in cfg[\"sources\"] if s[\"id\"] == {_lit(sid)}][0]\n"
+        "print(\"%s - recorded in sources.yml (" + f"{sid}" + "); a NEW endpoint own "
+        "terms are read at discovery before any fetch (T6)\" % e[\"licence_text\"])")
+    return value, _py(code)
+
+
+def _opt_phenotypes(store: str, record: dict) -> str:
+    cost, cq = _measured_gene(store, record, "mgi")
+    lic, lq = _licence_gene(store, record, "mgi")
+    qs = record["digest"]["queries"]
+    return "\n".join([
+        "- closes: genes-without-phenotypes=%d" % record["digest"]["gaps"]["genes-without-phenotypes"],
+        f"    query: echo genes-without-phenotypes=$({qs['markers']})",
+        "- question: which published genes carry which phenotype annotations "
+        "(the store holds none today)",
+        f"- cost: {cost}",
+        f"    query: {cq}" if cq else "    note: no query - nothing measured to cite yet",
+        f"- licence: {lic}",
+        f"    query: {lq}"])
+
+
+def _opt_abstracts(store: str, record: dict) -> str:
+    cfg = _lit_cfg()
+    b = cfg.get("budget") or {}
+    m = _latest_measured_run(store, "pubmed", sub="literature")
+    cost = (f"within the literature sources.yml budget "
+            f"(tool_calls<={b.get('tool_calls')}, wall_s<={b.get('wall_s')})")
+    if m:
+        c = m.get("cost") or {}
+        cost += (f"; measured last pubmed run {m['run_id']} (tool_calls={c.get('tool_calls')}, "
+                 f"wall_s={c.get('wall_s')})")
+        cq = (
+            "import json\n"
+            f"m = json.load(open({_lit(os.path.join('literature', 'runs', m['run_id'] + '.json'))}))\n"
+            "c = m[\"cost\"]\n"
+            f"b = {_lit(b)}\n"
+            "print(\"within the literature sources.yml budget "
+            "(tool_calls<=%s, wall_s<=%s); measured last pubmed run %s (tool_calls=%s, wall_s=%s)\"\n"
+            f"      % (b.get(\"tool_calls\"), b.get(\"wall_s\"), m[\"run_id\"], "
+            "c.get(\"tool_calls\"), c.get(\"wall_s\")))")
+        cq = f"    query: {_py(cq)}"
+    else:
+        cost += "; no measured run of this arm in the store yet"
+        cq = "    note: no query - no measured run of this arm to cite"
+    txt = cfg.get("licence_text") or "not recorded"
+    lic = (f"{txt} - recorded in literature/sources.yml; an abstract is stored only "
+           f"under the record own whitelisted licence")
+    lq = (
+        "import os, yaml\n"
+        f"p = {_lit(os.path.join(APP_ROOT, 'literature', 'sources.yml'))}\n"
+        "cfg = (yaml.safe_load(open(p)).get(\"sources\") or [{}])[0]\n"
+        "print(\"%s - recorded in literature/sources.yml; an abstract is stored only "
+        "under the record own whitelisted licence\" % cfg.get(\"licence_text\"))")
+    return "\n".join([
+        "- closes: papers-without-abstracts=%d" % record["digest"]["gaps"]["papers-without-abstracts"],
+        f"    query: echo papers-without-abstracts=$({record['digest']['queries']['papers-no-abstract']})",
+        "- question: what the papers SAY (abstract or full text), not only which papers exist",
+        f"- cost: {cost}", cq, f"- licence: {lic}", f"    query: {_py(lq)}"])
+
+
+def _opt_ids(record: dict) -> str:
+    return "\n".join([
+        "- closes: ids-without-xref=%d" % record["digest"]["gaps"]["ids-without-xref"],
+        f"    query: echo ids-without-xref=$({record['digest']['queries']['unresolved']})",
+        "- question: which stable ids the unresolved keys map to",
+        "- cost: none measurable yet - no candidate source for unresolved keys is "
+        "configured; the discovery sweep (tools/discover-sweep.sh) is the measuring instrument "
+        "and a drafted adapter runs in the source sandbox before admission",
+        "- licence: none read yet - T6 reads a candidate own terms at discovery, before any fetch",
+    ])
+
+
+def _opt_release(record: dict) -> str:
+    return "\n".join([
+        "- closes: sources-with-no-release=%d" % record["digest"]["gaps"]["sources-with-no-release"],
+        f"    query: echo sources-with-no-release=$({record['digest']['queries']['no-release']})",
+        "- question: how old the data of a release-less source actually is (a claim without a "
+        "release date cannot be staleness-checked, T7)",
+        "- cost: the discovery sweep own budget (it talks to GitHub, not to providers)",
+        "- licence: none read yet - T6 reads a candidate own terms at discovery, before any fetch",
+    ])
+
+
+def _suggest_doc(store: str, record: dict, header: str) -> str:
+    """The SUGGEST digest: ranked options with cost, licence and the question each would answer.
+    Every number carries the query that produced it; the page recommends, it never chooses."""
+    g, qs = record["digest"]["gaps"], record["digest"]["queries"]
+    summary_q = ("echo genes-without-phenotypes=$(%s) papers-without-abstracts=$(%s) "
+                 "ids-without-xref=$(%s) sources-with-no-release=$(%s)"
+                 % (qs["markers"], qs["papers-no-abstract"], qs["unresolved"], qs["no-release"]))
+    lines = [header,
+             "- gaps-now: genes-without-phenotypes=%d papers-without-abstracts=%d "
+             "ids-without-xref=%d sources-with-no-release=%d"
+             % (g["genes-without-phenotypes"], g["papers-without-abstracts"],
+                g["ids-without-xref"], g["sources-with-no-release"]),
+             f"    query: {summary_q}",
+             "    note: the options below are ranked by gap size - options with costs and "
+             "licences, never a decision",
+             ""]
+    options = []
+    if g["genes-without-phenotypes"] > 0:
+        options.append((g["genes-without-phenotypes"], _opt_phenotypes(store, record)))
+    if g["papers-without-abstracts"] > 0:
+        options.append((g["papers-without-abstracts"], _opt_abstracts(store, record)))
+    if g["ids-without-xref"] > 0:
+        options.append((g["ids-without-xref"], _opt_ids(record)))
+    if g["sources-with-no-release"] > 0:
+        options.append((g["sources-with-no-release"], _opt_release(record)))
+    options.sort(key=lambda t: -t[0])
+    for rank, (_n, body) in enumerate(options, 1):
+        lines.append(f"## option {rank}")
+        lines.append(body)
+        lines.append("- choosing: the operator - this page ranks options with costs and "
+                     "licences; it never states a decision")
+        lines.append("")
+    if not options:
+        lines += ["## no options - all four gap counts are 0",
+                  "- choosing: the operator - even an empty page never states a decision", ""]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- write (the loop + the daily pass)
+def write(store: str, record: dict, daily: bool = False) -> list[str]:
+    """Write the digests: per-source blocks per run (the loop), gaps+suggest refreshed (daily)."""
+    store = os.path.abspath(store)             # baked query paths must survive any cwd
+    _store_cfg(store, record)                  # the config the pages cite, kept with the store (F1)
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    written = []
+    if not daily:
+        prior = None
+        if record["digest"]["prior_run"]:
+            pp = os.path.join(store, "runs", f"{record['digest']['prior_run']}.json")
+            prior = _load(pp) if os.path.isfile(pp) else None
+        for sid in sorted(record["sources"]):
+            path = os.path.join(store, "digest", f"{sid}.md")
+            with open(path, "a", encoding="utf-8") as fh:
+                if os.path.getsize(path):
+                    fh.write("\n")
+                fh.write(_release_watch_block(store, record, sid, prior))
+            written.append(path)
+    head = (f"# GAPS - run {record['run_id']} - finished {record.get('finished_at', now)}"
+            if not daily else
+            f"# GAPS - refreshed {now} from run {record['run_id']} (the daily pass - no new run)")
+    gaps_path = os.path.join(store, "digest", "gaps.md")
+    with open(gaps_path, "w", encoding="utf-8") as fh:
+        fh.write(_gaps_doc(record, head))
+    written.append(gaps_path)
+    shead = (f"# SUGGEST - ranked options for what to fetch next - run {record['run_id']}"
+             if not daily else
+             f"# SUGGEST - ranked options for what to fetch next - refreshed {now} (the daily pass)")
+    sug_path = os.path.join(store, "digest", "suggest.md")
+    with open(sug_path, "w", encoding="utf-8") as fh:
+        fh.write(_suggest_doc(store, record, shead))
+    written.append(sug_path)
+    return written
+
+
+# ---------------------------------------------------------------- verify (the refusal rules)
+def _parse(text: str):
+    """-> (measured [(lineno, label, value, cmd)], block_label_lists).
+
+    A measured line is `- label: value`, then any number of indented `why:` / `note:` lines,
+    then `    query: cmd`. A query may span lines (a `python3 -c '…'` payload carries its own
+    newlines): every following line that is neither blank, nor a header, nor a label line,
+    nor an indented `query:/why:/note:` line is a continuation of the command, and the command
+    is run exactly as `verify` will run it.
+    `blocks` is one list of labels per `## run ` segment; the LAST segment is a per-source
+    digest's latest run."""
+    lines = text.split("\n")
+    measured, blocks, seg = [], [], []
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith("## run "):
+            blocks.append(seg)
+            seg = []
+        m = MEASURED_RE.match(lines[i])
+        if m:
+            j = i + 1
+            while j < len(lines) and NOTE_RE.match(lines[j]):
+                j += 1                       # why:/note: sit between the label and its query
+            if j < len(lines) and QUERY_RE.match(lines[j]):
+                cmd = QUERY_RE.match(lines[j]).group("cmd")
+                j += 1
+                while j < len(lines) and lines[j].strip() and not HEADER_RE.match(lines[j]) \
+                        and not MEASURED_RE.match(lines[j]) and not NOTE_RE.match(lines[j]) \
+                        and not QUERY_RE.match(lines[j]):
+                    cmd += "\n" + lines[j]
+                    j += 1
+                measured.append((i + 1, m["label"], m["value"].strip(), cmd))
+                seg.append(m["label"])
+                i = j
+                continue
+        i += 1
+    blocks.append(seg)
+    return measured, blocks
+
+
+def verify(path: str) -> list[str]:
+    """The refusal rules. Returns [] when the digest holds; else one refusal string per breach."""
+    path = os.path.abspath(path)
+    name = os.path.basename(path)
+    store = os.path.dirname(os.path.dirname(path))
+    if not os.path.isfile(path):
+        return [f"REFUSED[digest-missing] {name}: the file does not exist"]
+    text = open(path, encoding="utf-8").read()
+    measured, blocks = _parse(text)
+    refusals = []
+
+    # rule 1 — a digest with no numbers is REFUSED (prose is not a digest)
+    if not measured:
+        return [f"REFUSED[digest-no-numbers] {name}: prose is not a digest - "
+                f"no count line carrying its own query"]
+
+    # rule 3 — a digest with a missing schema-mandated count is REFUSED BY NAME
+    if name.startswith("gaps"):
+        labels = {m[1] for m in measured}
+        missing = [l for l in REQUIRED["gaps.md"] if l not in labels]
+    elif name.startswith("suggest"):
+        labels = {m[1] for m in measured}
+        missing = [l for l in REQUIRED["suggest.md"] if l not in labels]
+    else:                                     # a per-source digest: the LATEST run block holds
+        labels = blocks[-1] if blocks else []   # the schema (older blocks may predate it)
+        missing = [l for l in REQUIRED["source"] if l not in labels] if labels else []
+    for l in missing:
+        refusals.append(f"REFUSED[digest-missing-count] {name}: the {l} count line is missing "
+                        f"(schema symbiont/docs/DIGESTS.md)")
+
+    # rule 2 — a digest whose counts cannot be reproduced by its own query is REFUSED
+    for lineno, label, value, cmd in measured:
+        try:
+            rc, out = _q(store, cmd)
+        except subprocess.TimeoutExpired:
+            refusals.append(f"REFUSED[digest-not-reproducible] {name}: line {lineno} ({label}) "
+                            f"- the query timed out")
+            continue
+        if rc != 0:
+            refusals.append(f"REFUSED[digest-not-reproducible] {name}: line {lineno} ({label}) "
+                            f"- the query exited {rc} (a query that cannot run is a count that "
+                            f"cannot be reproduced)")
+            continue
+        if out.strip() != value:
+            refusals.append(f"REFUSED[digest-not-reproducible] {name}: line {lineno} ({label}) "
+                            f"- the query printed {out.strip()!r}, the digest claims {value!r}")
+
+    # NSC — the suggest list never states a decision
+    if name.startswith("suggest"):
+        for i, ln in enumerate(text.split("\n"), 1):
+            if DECISION_RE.search(ln) and "never states a decision" not in ln:
+                refusals.append(f"REFUSED[suggest-decision] {name}: line {i} states a decision - "
+                                f"a suggest digest only ranks options with costs")
+    return refusals
+
+
+# ---------------------------------------------------------------- the console door
+def _latest_run(store: str) -> dict:
+    best = None
+    for p in glob.glob(os.path.join(store, "runs", "*.json")):
+        try:
+            r = _load(p)
+        except Exception:
+            continue
+        if r.get("kind") == "agent-task" or r.get("status") == "READMITTED":
+            continue
+        key = r.get("finished_at") or r.get("started_at") or ""
+        if best is None or key > best[0]:
+            best = (key, r)
+    if not best:
+        raise RuntimeError(f"{store}: no harvest run record in runs/ - nothing to digest")
+    return best[1]
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="the four digests: release-watch+staleness "
+                                             "(digest/<source>.md) - gaps - suggest - verify")
+    sub = ap.add_subparsers(dest="cmd")
+    w = sub.add_parser("write", help="refresh gaps.md + suggest.md from the store (the daily pass)")
+    w.add_argument("--store", default=DEFAULT_STORE)
+    s = sub.add_parser("show", help="print one digest: gaps | suggest | <source id>")
+    s.add_argument("--store", default=DEFAULT_STORE)
+    s.add_argument("name")
+    v = sub.add_parser("verify", help="run the refusal rules over digest files (exit 3 = refused)")
+    v.add_argument("paths", nargs="+")
+    a = ap.parse_args(argv)
+
+    if a.cmd == "verify":
+        refusals = []
+        for p in a.paths:
+            refusals.extend(verify(p))
+        for r in refusals:
+            print(r)
+        if refusals:
+            print(f"REFUSED {len(refusals)} digest breach(es) - a digest is a measurement, "
+                  f"not prose and not a claim")
+            return 3
+        print(f"OK {len(a.paths)} digest(s) hold - every count reproduced by its own query")
+        return 0
+
+    if a.cmd == "show":
+        p = os.path.join(a.store, "digest", a.name if a.name.endswith(".md") else a.name + ".md")
+        sys.stdout.write(open(p, encoding="utf-8").read())
+        return 0
+
+    if a.cmd == "write":
+        a.store = os.path.abspath(a.store)   # collect() measures BEFORE write() absolutises
+        rec = _latest_run(a.store)            # (F8) - a relative --store crashed commonpath()
+        rec.setdefault("digest", collect(a.store, rec))
+        for p in write(a.store, rec, daily=True):
+            print(f"DIGEST   {os.path.relpath(p, a.store)}")
+        return 0
+
+    ap.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

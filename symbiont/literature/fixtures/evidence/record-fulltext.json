@@ -1,0 +1,19 @@
+{
+  "pmid": "99991002",
+  "doi": "10.0/fixture.fulltext.1",
+  "title": "A fixture study with its full text on file.",
+  "year": "2024",
+  "journal": "Fixture Journal",
+  "pmcid": "PMC9999102",
+  "open_access": "yes",
+  "licence": "cc by",
+  "abstract": "The gene is expressed in mouse gonadal somatic cells during embryonic development. This study reports an expression analysis and discusses the open questions for future work.",
+  "abstract_withheld_reason": "",
+  "evidence_level": "fulltext",
+  "field_provenance": "metadata-only:pmid,doi,title,year,journal,pmcid,open_access,licence;abstract:abstract;fulltext:fulltext_sha256",
+  "fulltext_sha256": "fixture0000000000000000000000000000000000000000000000000000000000ffff",
+  "fulltext_source": "pmc",
+  "fulltext_unavailable_reason": "",
+  "source_release": "2026-11-10 + @cyanheads/pubmed-mcp-server@2.12.0",
+  "first_seen_run": "fixture"
+}

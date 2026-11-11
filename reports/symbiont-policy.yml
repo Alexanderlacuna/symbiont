@@ -1,0 +1,88 @@
+# SYMBIONT ADMISSION POLICY — the N-stable-cycles rule the station READS
+# (req-P1-ADMISSION-POLICY-the-N-stable-cycles · owner decision D3, 2026-11-10:
+#  "maybe policy — a source that passes every card check and has been stable for N cycles
+#   may activate itself. NOT A BLOCKER: our team is not in the path of adding a source.
+#   The card is the safety, not a person.")
+#
+# WHO OWNS THIS FILE: the OWNER. The station (symbiont) only READS it — it never invents,
+# defaults or rounds a number that is not written here. A number the owner has not set is
+# written `null`, and `null` is NOT a permission:
+#   · stable_cycles_before_self_admit null  -> the station REFUSES every self-admission BY NAME
+#     (fail closed) until the owner writes N.
+#   · max_sources_active / max_new_sources_per_cycle null -> no cap is enforced, because a cap
+#     the owner has not set does not exist to enforce.
+#
+# FAIL CLOSED: a policy that is missing, unreadable or malformed makes the station refuse to
+# self-admit ANYTHING, and say so — with the parse error named (symbiont/admission.py).
+#
+# THE READER (the only code that may parse this file):
+#   python3 -m symbiont.admission --source <id> --card <card file> \
+#           [--policy reports/symbiont-policy.yml] [--store DIR] [--sources-config PATH]
+# A source may self-admit only when EVERY check in card_checks_required reads `ok` on its card
+# AND it has been stable for stable_cycles_before_self_admit consecutive cycles (a cycle = one
+# harvest run recorded in the store where the source ran and its count check agreed). The
+# admission record then says, verbatim: "by policy, rule stable_cycles_before_self_admit, N=<n>".
+# Anything less still needs the operator's word. An unknown key below is REFUSED by name, and a
+# quarantined source is never self-admitted (its way back is the re-admission card:
+# `python3 -m symbiont.loop --readmit <id> --card <file>`).
+#
+# The card checks (the card is a text file, one `check <name>: ok` line per check):
+#   licence      the provider's own licence wording was read and hashed (T6 — terms unread = no data)
+#   count_match  our count equals the source's own published count
+#   sample_rows  sampled raw rows were checked against the source's own format claims
+#   xref_rate    the cross-reference pair/unresolved rate is within what the card states
+#   cost         the run cost (requests, bytes, wall) is within the source's budget
+#
+# quarantine_after_count_mismatches and quarantine_after_rate_breach are the owner's numbers for
+# the loop's automatic quarantine (T9, symbiont/loop.py). They live here so the owner can change
+# them without touching code; the admission reader validates and echoes them in every admission
+# record, and the loop's thresholds match them (2, true) as shipped.
+
+version: 1
+
+policy:
+  # ── the three numbers the OWNER has not set yet — null, and the station fails closed on N ──
+  stable_cycles_before_self_admit: null   # N: consecutive stable cycles before a source may self-admit
+  max_sources_active: null                # cap on enabled, non-quarantined sources (null = no cap)
+  max_new_sources_per_cycle: null         # cap on self-admissions per cycle/UTC day (null = no cap)
+
+  # ── the numbers and rules the owner HAS set (quoted from the row, not invented) ──
+  licence_must_be_read: true              # the licence check is required even if the list below forgot it
+  card_checks_required:                   # EVERY one of these must read `ok` on the card
+    - licence
+    - count_match
+    - sample_rows
+    - xref_rate
+    - cost
+  quarantine_after_count_mismatches: 2    # count-check disagreements in a row before quarantine
+  quarantine_after_rate_breach: true       # a rate/budget breach twice in a row quarantines
+
+  # ── AGENT-TASK CAPS + NO-PROGRESS K (req-P1-AGENT-BUDGET-AND-NO-PROGRESS-DETECTOR, from the
+  #    AI-stations scout §10 CONTROL 2) — hard caps DECLARED here and ENFORCED by the station
+  #    (symbiont/agent_tasks.py), never by the model's goodwill. Each number is quoted from the
+  #    row's own evidence, not invented: 20 = Sakana's 20 citation rounds (2408.06292 App. B);
+  #    1800 s = the 30-minute lane clock the row watched kill a lane mid-report; 80 = 20 rounds
+  #    × the 4-call plugin contract (DESIGN-STATION §3); 3 = the row's own default K. A task run
+  #    under these stops BY NAME: REFUSED[no-progress] (K consecutive no-gain rounds),
+  #    REFUSED[cap-rounds], REFUSED[cap-wall], REFUSED[cap-calls] — never a clock kill, never a
+  #    silent death. The ledger (calls · tokens · bytes · wall · rounds · new accessions) lands
+  #    in the task's run record runs/<id>.json, whose cost line carries the manifest's own
+  #    shape (requests · bytes_in · wall_seconds) extended with tokens · rounds · accessions.
+  #    null would mean no cap to enforce (the doctrine above); the shipped policy declares all
+  #    four, so the station as shipped is capped. ──
+  agent_max_rounds: 20                    # max rounds one agent task may run
+  agent_max_wall_s: 1800                  # max wall-clock seconds one agent task may run
+  agent_max_calls: 80                     # max calls one agent task may make
+  agent_no_progress_rounds: 3             # K: consecutive no-gain rounds ⇒ REFUSED[no-progress]
+
+  # ── RETENTION (req-P1-RETENTION-AND-SUPERSEDE-what-current) — how many releases per source
+  #    the store keeps, and what that number costs on disk. N is the owner's number (OPS.md's
+  #    own floor, quoted not invented: “Keep at least the current release and the one before
+  #    it”), and the DISK CONSEQUENCE is stated in MB with the arithmetic shown, measured from
+  #    this store on 2026-11-10: one mgi release = 30.0 MB (29,973,395 bytes) · one ensembl
+  #    release = 3.7 MB (3,733,063 bytes), so N=2 keeps raw/ at most 2×30.0 + 2×3.7 = 67.4 MB.
+  #    The sweep (symbiont/retention.py) MOVES the drops to archive/ — it never frees disk —
+  #    and every drop is archived with its sha256s or REFUSED by name; a silent removal is not
+  #    representable. null would fail closed (nothing dropped), per the doctrine above. ──
+  retention_releases_per_source: 2        # N: releases kept per source (current + the one before)
+  retention_disk_consequence_mb: 67       # the ceiling N implies for raw/, stated in MB (2×30.0 + 2×3.7 ≈ 67)

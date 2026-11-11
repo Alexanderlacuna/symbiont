@@ -1,0 +1,393 @@
+{
+  "cost": {
+    "bytes_in": 103770.0,
+    "data_bytes": 103426,
+    "log": [
+      {
+        "bytes": 16,
+        "effective_url": "http://127.0.0.1:37717/ensembl/software.json",
+        "method": "GET",
+        "ms": 4,
+        "n": 1,
+        "note": "ensembl release",
+        "sha256": "6c939989bb49a74dec624c79e8c16fa3ccf547ac9a4678ffd239fee8a821bcbe",
+        "status": 200,
+        "url": "http://127.0.0.1:37717/ensembl/software.json"
+      },
+      {
+        "bytes": 4,
+        "effective_url": "http://127.0.0.1:37717/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%221%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E",
+        "method": "GET",
+        "ms": 1,
+        "n": 2,
+        "note": "ensembl published count",
+        "sha256": "c09c0aa0731b23f045e0827cb16485596f8b2841e5036de00198758f968dcec7",
+        "status": 200,
+        "url": "http://127.0.0.1:37717/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%221%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+      },
+      {
+        "bytes": 171,
+        "effective_url": "http://127.0.0.1:37717/ensembl/licence.html",
+        "method": "GET",
+        "ms": 0,
+        "n": 3,
+        "note": "licence Ensembl data: no restrictions on access or use",
+        "sha256": "b820b7540f6387b334e2f6e30eb8fc9cd3763cf201b4b6013a4595bd03ce2511",
+        "status": 200,
+        "url": "http://127.0.0.1:37717/ensembl/licence.html"
+      },
+      {
+        "bytes": 13046,
+        "effective_url": "http://127.0.0.1:37717/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E",
+        "method": "GET",
+        "ms": 0,
+        "n": 4,
+        "note": "ensembl data",
+        "sha256": "12a59b47f634eb121d45b6908087376cbd755bb1d3c7b8ed7028dc7f6b49c357",
+        "status": 200,
+        "url": "http://127.0.0.1:37717/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+      },
+      {
+        "bytes": 0,
+        "effective_url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt",
+        "method": "HEAD",
+        "ms": 0,
+        "n": 1,
+        "note": "mgi mrk_ensembl head",
+        "sha256": "",
+        "status": 200,
+        "url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt"
+      },
+      {
+        "bytes": 0,
+        "effective_url": "http://127.0.0.1:37717/reports/MRK_List1.rpt.gz",
+        "method": "HEAD",
+        "ms": 0,
+        "n": 2,
+        "note": "mgi mrk_list1 head",
+        "sha256": "",
+        "status": 200,
+        "url": "http://127.0.0.1:37717/reports/MRK_List1.rpt.gz"
+      },
+      {
+        "bytes": 153,
+        "effective_url": "http://127.0.0.1:37717/reports/licence.html",
+        "method": "GET",
+        "ms": 0,
+        "n": 3,
+        "note": "licence MGI data and annotations: CC-BY 4.0 (attribution required)",
+        "sha256": "20b901db07f273b4743e4be03f101deecce68b867df3b236347357da12a07048",
+        "status": 200,
+        "url": "http://127.0.0.1:37717/reports/licence.html"
+      },
+      {
+        "bytes": 81865,
+        "effective_url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt",
+        "method": "GET",
+        "ms": 0,
+        "n": 4,
+        "note": "mgi mrk_ensembl",
+        "sha256": "6952252ec790e8644f34c48ad70d57fd479cb3b41f762b4bd3002cde4fde69af",
+        "status": 200,
+        "url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt"
+      },
+      {
+        "bytes": 8515,
+        "effective_url": "http://127.0.0.1:37717/reports/MRK_List1.rpt.gz",
+        "method": "GET",
+        "ms": 0,
+        "n": 5,
+        "note": "mgi mrk_list1_gz",
+        "sha256": "891de1d658ae98449b39e2e3995d2535c4124147b900e564391d52bc03bbe1fb",
+        "status": 200,
+        "url": "http://127.0.0.1:37717/reports/MRK_List1.rpt.gz"
+      }
+    ],
+    "rate_limit_wait_s": 0,
+    "requests": 9,
+    "requests_by_method": {
+      "GET": 7,
+      "HEAD": 2
+    },
+    "rows_in": 824,
+    "rows_published": 241,
+    "rows_records": 482,
+    "rows_rejected": 0,
+    "wall_seconds": 0.0
+  },
+  "findings": [],
+  "finished_at": "2026-11-10T13:13:28.053994+00:00",
+  "publish": {
+    "path": "/home/kabui/app-farm/symbiont/fixtures/store-doors/view/mouse_gene.v1.tsv",
+    "rows": 241,
+    "schema_sha256": "c985bdd5e515e3268fbb39b8e81bf482f362e4aed102d855a7a61bc080724a5a",
+    "view_sha256": "a78d8a46762d692bfb36df1da86f704d9e2c99e367cca6ccd7218db7859a489b"
+  },
+  "question": "what mouse gene identity and position can we publish",
+  "refusals": [],
+  "replay": [],
+  "run_id": "doors-fixture-1",
+  "since": "auto",
+  "skipped": {},
+  "sources": {
+    "ensembl_biomart": {
+      "adapter": "ensembl_biomart",
+      "budget": {
+        "bytes": 4000000,
+        "requests": 12,
+        "wall_s": 90
+      },
+      "cost": {
+        "bytes_in": 13237,
+        "rate_limit_waits": [],
+        "requests": 4,
+        "wall_s": 0.0
+      },
+      "discover": {
+        "licence": {
+          "name": "Ensembl data: no restrictions on access or use",
+          "quote": "Ensembl imposes no restrictions on access to, or use of, the data provided and the software used to analyse and present it.",
+          "terms_sha256": "b820b7540f6387b334e2f6e30eb8fc9cd3763cf201b4b6013a4595bd03ce2511",
+          "url": "http://127.0.0.1:37717/ensembl/licence.html"
+        },
+        "notes": [
+          "endpoints from sources.yml: mart=http://127.0.0.1:37717/ensembl/martservice metadata=http://127.0.0.1:37717/ensembl/software.json",
+          "licence page read at http://127.0.0.1:37717/ensembl/licence.html (171 bytes)",
+          "dataset=mmusculus_gene_ensembl attributes=mgi_symbol+ensembl_gene_id+chromosome_name+start_position+end_position uniqueRows=1 header=1"
+        ],
+        "published_count": 241,
+        "published_count_url": "http://127.0.0.1:37717/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%221%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E",
+        "release": "ensembl-116",
+        "resources": [
+          {
+            "content_length": 0,
+            "etag": "",
+            "last_modified": "",
+            "reskey": "biomart_tsv",
+            "url": "http://127.0.0.1:37717/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+          }
+        ]
+      },
+      "enabled": true,
+      "fetch": {
+        "new": true,
+        "reason": "release or published count moved (or no prior snapshot)",
+        "resources": {
+          "biomart_tsv": {
+            "bytes": 13046,
+            "filename": "biomart_mmusculus_gene.tsv",
+            "sha256": "12a59b47f634eb121d45b6908087376cbd755bb1d3c7b8ed7028dc7f6b49c357"
+          }
+        }
+      },
+      "id": "ensembl_biomart",
+      "normalise": {
+        "accounting": [
+          {
+            "note": "every row either became a record or a reject, with the reason kept",
+            "records": 241,
+            "rejects": 0,
+            "reskey": "biomart_tsv",
+            "rows_in": 241,
+            "url": "http://127.0.0.1:37717/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E",
+            "used": 0
+          }
+        ],
+        "records": 241,
+        "rejects": 0,
+        "rejects_by_reason": {},
+        "rows_in": 241
+      },
+      "quarantined": null,
+      "rejects_file": "/home/kabui/app-farm/symbiont/fixtures/store-doors/rejects/doors-fixture-1.ensembl_biomart.tsv",
+      "role": "id_authority",
+      "snapshots": {
+        "biomart_tsv": {
+          "bytes": 13046,
+          "path": "/home/kabui/app-farm/symbiont/fixtures/store-doors/raw/ensembl_biomart/ensembl-116/12a59b47f634eb121d45b6908087376cbd755bb1d3c7b8ed7028dc7f6b49c357.tsv",
+          "release": "ensembl-116",
+          "sha256": "12a59b47f634eb121d45b6908087376cbd755bb1d3c7b8ed7028dc7f6b49c357",
+          "url": "http://127.0.0.1:37717/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+        }
+      },
+      "stale": {
+        "age_days": null,
+        "finding": "",
+        "policy_days": 120,
+        "release_at": null,
+        "stale": false,
+        "stale_before_refresh": false,
+        "stale_since": null,
+        "stored_release": "",
+        "upstream_moved": false,
+        "upstream_release": "ensembl-116"
+      },
+      "verify": {
+        "detail": "rows we read == the count BioMart publishes for the same query",
+        "ok": true,
+        "ours": 241,
+        "source_count": 241,
+        "url": "http://127.0.0.1:37717/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%221%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+      }
+    },
+    "mgi": {
+      "adapter": "mgi",
+      "budget": {
+        "bytes": 4000000,
+        "requests": 12,
+        "wall_s": 90
+      },
+      "cost": {
+        "bytes_in": 90533,
+        "rate_limit_waits": [],
+        "requests": 5,
+        "wall_s": 0.0
+      },
+      "discover": {
+        "licence": {
+          "name": "MGI data and annotations: CC-BY 4.0 (attribution required)",
+          "quote": "MGI data and annotations are licensed under a Creative Commons Attribution 4.",
+          "terms_sha256": "20b901db07f273b4743e4be03f101deecce68b867df3b236347357da12a07048",
+          "url": "http://127.0.0.1:37717/reports/licence.html"
+        },
+        "notes": [
+          "endpoints from sources.yml: base=http://127.0.0.1:37717/reports/ metadata=http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt",
+          "licence page read at http://127.0.0.1:37717/reports/licence.html (153 bytes)",
+          "MGI publishes no count endpoint; the release file's own record count is the source count"
+        ],
+        "published_count": null,
+        "published_count_url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt",
+        "release": "mgi-2026-11-09",
+        "resources": [
+          {
+            "content_length": 81865,
+            "etag": "",
+            "last_modified": "Mon, 09 Nov 2026 21:27:45 GMT",
+            "reskey": "mrk_ensembl",
+            "url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt"
+          },
+          {
+            "content_length": 8515,
+            "etag": "",
+            "last_modified": "Tue, 10 Nov 2026 13:13:27 GMT",
+            "reskey": "mrk_list1_gz",
+            "url": "http://127.0.0.1:37717/reports/MRK_List1.rpt.gz"
+          }
+        ]
+      },
+      "enabled": true,
+      "fetch": {
+        "new": true,
+        "reason": "ETag moved (or no prior snapshot): release files re-fetched",
+        "resources": {
+          "mrk_ensembl": {
+            "bytes": 81865,
+            "filename": "mrk_ensembl.rpt",
+            "sha256": "6952252ec790e8644f34c48ad70d57fd479cb3b41f762b4bd3002cde4fde69af"
+          },
+          "mrk_list1_gz": {
+            "bytes": 8515,
+            "filename": "mrk_list1_gz.rpt.gz",
+            "sha256": "891de1d658ae98449b39e2e3995d2535c4124147b900e564391d52bc03bbe1fb"
+          }
+        }
+      },
+      "id": "mgi",
+      "normalise": {
+        "accounting": [
+          {
+            "note": "every row either became a record or a reject, with the reason kept",
+            "records": 241,
+            "rejects": 0,
+            "reskey": "mrk_ensembl",
+            "rows_in": 241,
+            "url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt",
+            "used": 0
+          },
+          {
+            "note": "76 withdrawn rows carried a current accession (retired map); 266 current markers passed through",
+            "records": 0,
+            "rejects": 0,
+            "reskey": "mrk_list1_gz",
+            "rows_in": 342,
+            "url": "http://127.0.0.1:37717/reports/MRK_List1.rpt.gz",
+            "used": 342
+          }
+        ],
+        "records": 241,
+        "rejects": 0,
+        "rejects_by_reason": {},
+        "rows_in": 583
+      },
+      "quarantined": null,
+      "rejects_file": "/home/kabui/app-farm/symbiont/fixtures/store-doors/rejects/doors-fixture-1.mgi.tsv",
+      "role": "xref_provider",
+      "snapshots": {
+        "mrk_ensembl": {
+          "bytes": 81865,
+          "path": "/home/kabui/app-farm/symbiont/fixtures/store-doors/raw/mgi/mgi-2026-11-09/6952252ec790e8644f34c48ad70d57fd479cb3b41f762b4bd3002cde4fde69af.rpt",
+          "release": "mgi-2026-11-09",
+          "sha256": "6952252ec790e8644f34c48ad70d57fd479cb3b41f762b4bd3002cde4fde69af",
+          "url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt"
+        },
+        "mrk_list1_gz": {
+          "bytes": 8515,
+          "path": "/home/kabui/app-farm/symbiont/fixtures/store-doors/raw/mgi/mgi-2026-11-09/891de1d658ae98449b39e2e3995d2535c4124147b900e564391d52bc03bbe1fb.rpt.gz",
+          "release": "mgi-2026-11-09",
+          "sha256": "891de1d658ae98449b39e2e3995d2535c4124147b900e564391d52bc03bbe1fb",
+          "url": "http://127.0.0.1:37717/reports/MRK_List1.rpt.gz"
+        }
+      },
+      "stale": {
+        "age_days": null,
+        "finding": "",
+        "policy_days": 120,
+        "release_at": null,
+        "stale": false,
+        "stale_before_refresh": false,
+        "stale_since": null,
+        "stored_release": "",
+        "upstream_moved": false,
+        "upstream_release": "mgi-2026-11-09"
+      },
+      "verify": {
+        "detail": "we read 583 rows across two release files; 241 became records, 0 were rejected with a reason, 342 rows served the retired map \u2014 the source's own count for MRK_ENSEMBL is its 241 record rows",
+        "ok": true,
+        "ours": 241,
+        "source_count": 241,
+        "url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt"
+      }
+    }
+  },
+  "sources_path": "/tmp/doors-prov.ca0bk8ub/sources.yml",
+  "started_at": "2026-11-10T13:13:28.035540+00:00",
+  "status": "PUBLISHED",
+  "xref": {
+    "authority_rows": 241,
+    "authority_rows_not_published": 0,
+    "conflicts": {
+      "many_to_one_authority": 0,
+      "many_to_one_provider": 0,
+      "many_to_one_reverse": 0,
+      "retired_symbol_on_authority_side": 0,
+      "xref_disagreement": 0
+    },
+    "files": [
+      "/home/kabui/app-farm/symbiont/fixtures/store-doors/xref/xref.tsv",
+      "/home/kabui/app-farm/symbiont/fixtures/store-doors/xref/conflicts.tsv",
+      "/home/kabui/app-farm/symbiont/fixtures/store-doors/xref/retired.tsv"
+    ],
+    "pairs": 241,
+    "provider_rows": 241,
+    "retired_rows": 76,
+    "unresolved_by_reason": {
+      "many_to_one_authority": 0,
+      "many_to_one_provider": 0,
+      "many_to_one_reverse": 0,
+      "no_provider_match": 0,
+      "retired_symbol_on_authority_side": 0,
+      "xref_disagreement": 0
+    },
+    "unresolved_keys": 0
+  }
+}

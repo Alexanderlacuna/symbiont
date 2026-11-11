@@ -1,0 +1,13 @@
+{
+  "bytes": 264,
+  "etag": "",
+  "fetched_at": "2026-11-10T11:55:29.173866+00:00",
+  "filename": "mrk_list1_gz.rpt.gz",
+  "last_modified": "Mon, 09 Nov 2026 21:00:00 GMT",
+  "release": "mgi-2026-11-09",
+  "reskey": "mrk_list1_gz",
+  "run_id": "arc-1",
+  "sha256": "405f73c0128841a694deb54bcd7797ef5935f0bb603ff95bb1fe3cddc3404633",
+  "source": "mgi",
+  "url": "http://127.0.0.1:42997/reports/MRK_List1.rpt.gz"
+}

@@ -1,0 +1,14 @@
+# FIXTURE — same schema as the shipped policy; only agent_max_wall_s differs (1s)
+version: 1
+policy:
+  stable_cycles_before_self_admit: null
+  max_sources_active: null
+  max_new_sources_per_cycle: null
+  agent_max_rounds: 20
+  agent_max_wall_s: 1
+  agent_max_calls: 80
+  agent_no_progress_rounds: 3
+  licence_must_be_read: true
+  card_checks_required: [licence, count_match, sample_rows, xref_rate, cost]
+  quarantine_after_count_mismatches: 2
+  quarantine_after_rate_breach: true
