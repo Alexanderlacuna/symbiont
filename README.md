@@ -7,6 +7,19 @@ A **data-mining station** for biological annotation and literature. It fetches f
 count against the source's own count, stores every row with its **source, release and hash**, and hands the
 corpus over as a staged dataset plus a self-describing manifest. Nothing states a number it cannot re-derive.
 
+## How a source becomes data — five stages, one page
+
+| stage | who owns it | what it produces |
+|---|---|---|
+| **discovered** | the operator's surface registry | a candidate with an id and a url |
+| **evaluated** | the machine | the six-point source spec + one sandbox trial whose count must match |
+| **admitted** | the machine, recorded | a card and a decision, with evidence |
+| **enabled** | the operator, one line | permission to fetch — **admission is not permission** |
+| **acquired** | the machine | verified rows, a view and a manifest |
+
+After acquisition the relationship continues: releases move, counts drift, sources go stale or vanish — and a source can be retired on purpose. The full
+lifecycle, the event classes, the replay rules and the rules for adding a source by hand are in [`docs/DESIGN.md`](docs/DESIGN.md).
+
 ## Start here — the quickstart
 
 First command. No install, no network, no key (Python 3.10+ and one YAML reader):
