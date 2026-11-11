@@ -38,7 +38,7 @@ manifest — git history is tamper-evident, not tamper-proof.
 ## 3 · EVENT CLASSES
 ```
 discovered · evaluated · sandboxed · admitted · intent_changed · acquired · release_moved · count_ok · count_mismatch ·
-stale · unreadable · vanished · retired · manual_add · manual_override · override_expired
+schema_changed · stale · unreadable · vanished · retired · manual_add · manual_override · override_expired
 each event: {seq, ts, source_id, release?, class, actor: machine|operator, why, evidence{...}, origin: live|backfill, prev_event_sha256}
 ```
 

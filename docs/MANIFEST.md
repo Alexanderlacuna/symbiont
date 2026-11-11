@@ -53,6 +53,13 @@ re-derivation.
 ```
 · SCHEMA VERSION IS TEMPORAL. A row ingested under schema v1 does not mean what a v2 row means. So the schema version is stored per run (and per row), and a
   schema bump is a re-admission event, exactly as a release move is — otherwise a corpus silently mixes two meanings under one name.
+· A SCHEMA IS PUBLISHED, NOT ONLY HASHED. A hash identifies a schema; it does not explain one. So every schema version a producer emits must also exist as a
+  versioned, human-readable definition (columns, types, units, and what each value MEANS) that a consumer can implement against — otherwise
+  `REFUSED[schema-unknown]` is the only reply a consumer can ever give, and v2 can never be supported because nobody knows what v2 says. The manifest carries
+  name · version · sha256; the definition is what makes that triple usable.
+· A SCHEMA CHANGE IS ITS OWN LIFECYCLE TRANSITION. `release_moved` means the same meaning, newer rows; a schema change means the meaning moved. It needs its own
+  event (`schema_changed`), its own re-admission, and it holds even when the release numbers do not move — and the count check cannot see it, because 10 000
+  rows are still 10 000 rows.
 · A SCHEMA HASH CATCHES SHAPE, NOT INTENT. A producer can keep the schema byte-identical and change what the values mean. No boundary check can see that;
   only re-derivation can — which federation, by definition, cannot do. So the honest claim for federated rows stays `verified: manifest`, and the card must say
   the authority was not re-derived.
