@@ -32,7 +32,10 @@ READER_SUFFIX = (".md",)
 READER_NAMES = ("Makefile", "symbiont/cycle.yml")
 SCAN_SUFFIX = (".md", ".py", ".sh", ".yml", ".yaml", ".txt", ".toml", ".scm")
 SCAN_NAMES = ("Makefile",)
+# docs/reference/ holds ARCHIVED descriptions of this station: their citations are resolved as of their own date, and rewriting them to add a
+# '†' would falsify the record — so they are skipped by the reconciliation on purpose (2026-11-12).
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv"}
+SKIP_PATHS = {"docs/reference"}   # relative prefixes, checked against the walker's relative dir
 SKIP_FILES = {LEDGER}
 
 # a path with a directory part, as this tree writes them
@@ -75,6 +78,9 @@ def ledger_rows(root):
 def scan(root):
     """Yield (relpath, lineno, text, cited_path) for every citation in every scanned file."""
     for base, dirs, files in os.walk(root):
+        rel = os.path.relpath(base, root)
+        if any(rel == p or rel.startswith(p + os.sep) for p in SKIP_PATHS):
+            dirs[:] = []; continue
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for name in sorted(files):
             full = os.path.join(base, name)
@@ -125,7 +131,9 @@ def main(argv):
         return 3
 
     tree = [os.path.relpath(os.path.join(b, f), root).replace(os.sep, "/")
-            for b, d, fs in os.walk(root) if not (set(os.path.relpath(b, root).split(os.sep)) & SKIP_DIRS)
+            for b, d, fs in os.walk(root)
+            if not (set(os.path.relpath(b, root).split(os.sep)) & SKIP_DIRS)
+            and not any(os.path.relpath(b, root) == p or os.path.relpath(b, root).startswith(p + os.sep) for p in SKIP_PATHS)
             for f in fs]
 
     def glob_hit(pattern, near):

@@ -18,6 +18,16 @@ below, and the same closed transition table that the code obeys is applied to th
                                         ONE exception, with a scope: this is the only thing that
                                         lets an un-admitted source be fetched (the door's
                                         REFUSED[not-admitted] names it)
+    registry bootstrap --from-seed [--why "…"]
+                                        FIRST RUN OF A CLONE (req-P0-A-NEW-USER-CANNOT-MINE-THE-
+                                        PERMISS): the export ships INTENT (sources.yml) and no
+                                        HISTORY (the store), so it writes one
+                                        admitted{origin: backfill} per shipped source from
+                                        symbiont/fixtures/source-events.seed.jsonl — naming the run
+                                        record each came from, and SAYING how the clone started.
+                                        It refuses to touch a store that already has history.
+                                        The loop does this itself on a store with no diary and
+                                        says NOTE[no-history]; this door is the explicit form.
     registry verify                     read the diary, verify every line and the hash chain,
                                         REPORT a truncated tail (exit 3), print the head
     registry head                       just the anchor: seq + sha256 of the last line
@@ -207,6 +217,63 @@ def cmd_override(a) -> int:
     say("         " + events.line_bytes(ev).decode("utf-8"))
     say("NOTE     an override never writes `admitted`: the receipt travels in the run record and "
         "the manifest, and evaluation clears it")
+    return 0
+
+
+def cmd_bootstrap(a) -> int:
+    """`registry bootstrap --from-seed` — the EXPLICIT first step of a clone.
+
+    (req-P0-A-NEW-USER-CANNOT-MINE-THE-PERMISS.) The loop does the same thing by itself when it
+    finds a store with no diary (NOTE[no-history]); this door is the form an operator runs on
+    purpose, before mining, so the admission history exists and can be read first. Both call the
+    ONE bootstrap — `events.bootstrap_from_seed` — so there is no second definition of what a
+    clone's initial history is.
+    """
+    if not a.from_seed:
+        return _refuse("usage", "bootstrap needs --from-seed: the SHIPPED backfill is the only "
+                                "thing this door writes admission history from (an admission with "
+                                "no artefact behind it is what `admission admit` is for)")
+    sources = _sources(a.sources_config)
+    enabled_ids = {events.dataset_of(cfg)[0] for cfg in sources.values() if cfg.get("enabled")}
+    if events.read(a.store).no_history:
+        # docs/DESIGN.md §12.3: a seed naming a source this sources.yml does not declare means the
+        # package and the config disagree about which sources exist — refuse, write NOTHING, and
+        # name the disagreement (a half-bootstrap would be a history that hides its own gap).
+        try:
+            facts = events.read_seed()
+        except events.DiaryRefused as e:
+            say(str(e))
+            return _refuse(e.code, "nothing was appended")
+        missing = sorted({f["source_id"] for f in facts} - enabled_ids)
+        if missing:
+            return _refuse("seed-mismatch",
+                           f"the shipped seed names {missing}, which "
+                           f"{os.path.abspath(a.sources_config)} does not declare-and-enable — the "
+                           f"package and the config disagree about which sources exist, so NOTHING "
+                           f"was written. Declare it there, or admit it explicitly "
+                           f"(symbiont.admission evaluate/admit, or registry override)")
+    try:
+        b = events.bootstrap_from_seed(a.store, enabled_ids, why=a.why)
+    except events.DiaryRefused as e:
+        say(str(e))
+        return _refuse(e.code, f"nothing was appended to {events.diary_path(a.store)}")
+    say(f"SEED     {b['seed']}  sha256={b['seed_sha256'][:16]}…")
+    for s in b["skipped"]:
+        say(f"SKIP     {s['source_id'] or '(store)'}: {s['why']}")
+    for x in b["admitted"]:
+        say(f"APPENDED seq {x['seq']}  admitted  {x['source_id']}  (operator, backfill)  "
+            f"from {x['artefact']}")
+    if not b["admitted"]:
+        say("NOTE     nothing was written — the seed had nothing to add to this store")
+        return 0
+    h = events.head_of(a.store)
+    say(f"BOOTSTRAP {len(b['admitted'])} admitted{{origin: backfill}} event(s) from the shipped "
+        f"seed — why: {b['why']}")
+    say(f"DIARY    {events.diary_path(a.store)}  head seq={h['seq']} "
+        f"sha256={h['head_sha256'][:16]}…")
+    say("NOTE     this is HISTORY, not permission: it restores decisions a shipped run record "
+        "documents, every line says `origin: backfill`, and a store that already has history is "
+        "never touched by it")
     return 0
 
 
@@ -552,6 +619,18 @@ def main(argv=None) -> int:
     p = sub.add_parser("verify", help="verify every line and the chain; REPORT a truncated tail")
     common(p)
     p.set_defaults(fn=cmd_verify)
+
+    p = sub.add_parser("bootstrap", help="FIRST RUN OF A CLONE: write the shipped backfill "
+                                          "(admitted{origin: backfill}) into a store that has no "
+                                          "admission history at all")
+    common(p)
+    p.add_argument("--from-seed", action="store_true",
+                   help=f"use the shipped seed ({events.seed_path()})")
+    p.add_argument("--why", default=events.SEED_WHY,
+                   help=f"one sentence recorded on every line (default: {events.SEED_WHY!r})")
+    p.add_argument("--sources-config", default=contract.DEFAULT_SOURCES,
+                   help="the INTENT whose enabled datasets this backfill covers")
+    p.set_defaults(fn=cmd_bootstrap)
 
     p = sub.add_parser("head", help="the anchor: seq + sha256 of the last line")
     common(p)

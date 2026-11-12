@@ -1,0 +1,27 @@
+# THE SHIPPED BACKFILL — the two admissions this station's own run records established.
+#
+# WHY THIS FILE EXISTS (req-P0-A-NEW-USER-CANNOT-MINE-THE-PERMISS). The station's export withholds
+# the store (~446 MB, not redistributable) and the STORE IS THE UNIT OF HISTORY, so a clone ships
+# INTENT (sources.yml: enabled: true) and NO HISTORY (no diary). The permission test then refuses
+# every source with "the diary holds no 'admitted' event" — true, and useless to a stranger, because
+# there is no diary to hold anything. The rule is right; the bootstrap was missing. This is it.
+#
+# WHAT IT IS: FACTS, not lines. One JSON object per line, '#' comments allowed, no seq and no
+# prev_event_sha256 — the chain belongs to the ONE writer (symbiont/diary.py::append), so a file in
+# the package can never ship a link it cannot prove. `bootstrap_from_seed()` is the only thing that
+# turns these into diary lines, and it only ever writes admitted{origin: backfill}, only into a
+# store that holds NO history at all, and only for a source this sources.yml declares and enables.
+# The line it writes carries the why `shipped seed — no admission history in this clone`, so the
+# ledger is never silent about how a clone started.
+#
+# WHAT EACH LINE NAMES: the ARTEFACT the admission came from — the committed RUN RECORD that
+# verified that release and its count (symbiont/fixtures/store/runs/arc-1.json, which ships and is
+# pinned here by sha256) and the decision record that chose the fetch route (reports/adapters/…,
+# which ships). The full-scale farm run records (78,348/78,348 and 77,645/77,645 rows) live in the
+# live store and are NOT redistributed; each line says so rather than implying it carries them.
+#
+# A seed line is not a permission: it restores a decision a run record already documents. A source
+# that was never admitted stays unadmitted, and a store that has a diary but lacks the admission
+# still answers REFUSED[not-admitted] — this file is read ONLY when there is no diary at all.
+{"class": "admitted", "origin": "backfill", "source_id": "ensembl:mmusculus_gene_ensembl", "release": "ensembl-116", "why": "shipped seed — no admission history in this clone", "evidence": {"source_id_source": "declared:publisher+dataset", "artefact": "symbiont/fixtures/store/runs/arc-1.json", "artefact_kind": "run-record", "artefact_sha256": "15be4c1df9ef6b4ce98e6a9de654ceb8c9f2bee61c8874ed3348b955d97b773c", "artefact_says": "T2 COUNTS: ours 5 == the source's own published count 5, release ensembl-116, licence page read and hashed at discovery", "decision_record": "reports/adapters/ensembl_biomart.decision.md", "live_store": "NOT SHIPPED — the full-scale run record (78,348/78,348 rows) is in the 446 MB live store the export withholds"}}
+{"class": "admitted", "origin": "backfill", "source_id": "mgi:MRK_ENSEMBL", "release": "mgi-2026-11-09", "why": "shipped seed — no admission history in this clone", "evidence": {"source_id_source": "declared:publisher+dataset", "artefact": "symbiont/fixtures/store/runs/arc-1.json", "artefact_kind": "run-record", "artefact_sha256": "15be4c1df9ef6b4ce98e6a9de654ceb8c9f2bee61c8874ed3348b955d97b773c", "artefact_says": "we read 10 rows across two release files (MRK_ENSEMBL + MRK_List1), 5 became records, 0 rejected with a reason, release mgi-2026-11-09", "decision_record": "reports/adapters/mgi.decision.md", "live_store": "NOT SHIPPED — the full-scale run record (77,645/77,645 rows) is in the 446 MB live store the export withholds"}}

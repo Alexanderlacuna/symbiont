@@ -965,6 +965,10 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
     bytes_in = 0.0
     waits: list[float] = []
     refused = False
+    # the admissions this run BACKFILLED from the shipped seed (req-P0-A-NEW-USER-CANNOT-MINE-THE-
+    # PERMISS): carried into the run record below, so the diary head it anchors NAMES what it wrote.
+    backfilled: list[dict] = []
+    no_history: dict = {}
 
     def quarantine(sid: str, reason: str, status: str, evidence: list[str]) -> dict:
         """T9 — flip the source to QUARANTINED IN sources.yml, atomically, with the EVIDENCE (the
@@ -1012,7 +1016,8 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
         # makes an alteration visible; a whole-file rewrite can recompute every link. Anchoring the
         # head in a record other artefacts quote (the manifest repeats and re-checks it) means a
         # rewrite must also rewrite this run record — that is the price the docstring states.
-        record["diary"] = dict(events.head_of(store), anchored_in=f"runs/{run_id}.json")
+        record["diary"] = dict(events.head_of(store), anchored_in=f"runs/{run_id}.json",
+                               backfilled=list(backfilled), no_history=dict(no_history))
         rec_path = jdump(record, os.path.join(rdir, f"{run_id}.json"))
         dg_paths = digests.write(store, record)
         say("DIGESTS  " + " ".join(os.path.relpath(p, store) for p in dg_paths))
@@ -1026,6 +1031,9 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
         say(f"DIARY    head seq={dg['seq']} sha256={dg['head_sha256']} ({dg['events']} event(s), "
             f"anchored in {dg['anchored_in']}"
             + ("; TRUNCATED — see `python3 -m symbiont.registry verify`" if dg["truncated"] else "")
+            + ("; BACKFILLED this run from the shipped seed: "
+               + " · ".join(f"{b['source_id']} (seq {b['seq']}, origin {b['origin']})"
+                            for b in dg["backfilled"]) if dg.get("backfilled") else "")
             + ")")
         for f in record["findings"]:
             say(f"FINDING  {f}")
@@ -1066,6 +1074,59 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
                       f"REFUSED  run {run_id}: the diary {events.diary_path(store)} is damaged — "
                       f"nothing was fetched, nothing appended, nothing published; repair or "
                       f"restore the diary and re-run")
+
+    # ── NO HISTORY IS NOT A DENIAL (req-P0-A-NEW-USER-CANNOT-MINE-THE-PERMISS) ──────────────
+    # A clone ships INTENT (`enabled: true`) and NO HISTORY (the store, and with it the diary, is
+    # not redistributed). The permission test reads that as "the diary holds no 'admitted' event" —
+    # a true sentence about a file that does not exist, which a stranger reads as "I am not allowed".
+    # So the two facts are separated HERE, before a single source is judged:
+    #   · NO DIARY AT ALL  -> NOTE[no-history] and the shipped backfill is applied (the bootstrap);
+    #   · A DIARY THAT LACKS THE ADMISSION -> REFUSED[not-admitted], exactly as before (below).
+    # The bootstrap never invents a decision: it writes the admissions a SHIPPED run record already
+    # established, marks them `origin: backfill`, and says in the why how this clone started.
+    if diary.no_history:
+        seed = events.seed_path()
+        no_history = dict(store=os.path.abspath(store),
+                          diary=events.diary_path(store),
+                          diary_state=("empty" if diary.exists else "absent"),
+                          seed=seed, seed_present=os.path.exists(seed),
+                          backfilled=[])
+        say(f"NOTE[no-history] this store holds NO admission history at all: "
+            f"{events.diary_path(store)} is {no_history['diary_state']} — nothing has ever been "
+            f"admitted HERE, and that is NOT the same fact as 'admitted and then denied'. A store "
+            f"that HAS a diary and lacks the admission answers REFUSED[not-admitted]; this one has "
+            f"no diary to make that claim about.")
+        if not no_history["seed_present"]:
+            say(f"NOTE[no-history] the shipped backfill is NOT on disk ({seed}), so there is "
+                f"nothing to restore from it; each source is refused BELOW by name, with the two "
+                f"ways to establish its admission.")
+        else:
+            enabled_ids = {events.dataset_of(cfg)[0] for cfg in sources.values() if cfg.get("enabled")}
+            try:
+                b = events.bootstrap_from_seed(store, enabled_ids)
+            except events.DiaryRefused as e:
+                refused = True
+                record["refusals"].append(dict(code=e.code, source="",
+                                               detail=f"the shipped seed {seed}: {e}"))
+                say(f"REFUSED[{e.code}] the shipped seed {seed} could not be used: {e}")
+            else:
+                no_history["backfilled"] = b["admitted"]
+                no_history["skipped"] = b["skipped"]
+                no_history["seed_sha256"] = b["seed_sha256"]
+                backfilled = b["admitted"]
+                for s in b["skipped"]:
+                    say(f"BOOTSTRAP SKIP {s['source_id'] or '(store)'}: {s['why']}")
+                for a in b["admitted"]:
+                    say(f"BOOTSTRAP {a['source_id']}  admitted{{origin: backfill}} seq {a['seq']}  "
+                        f"from {a['artefact']}")
+                if b["admitted"]:
+                    say(f"NOTE[bootstrap] wrote {len(b['admitted'])} admitted{{origin: backfill, "
+                        f"why: '{b['why']}'}} event(s) from "
+                        f"{os.path.relpath(seed, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))} "
+                        f"(sha256 {b['seed_sha256'][:16]}…) — the ledger now says how this store "
+                        f"started, and the run record anchors it")
+                diary = events.read(store)
+        record["no_history"] = no_history
 
     # ── THE RESEARCH SPEC, PART 1: WHAT THIS INVESTIGATION REQUIRES, HASHED, AND THE COVERAGE 
     # GATE BEFORE ANYTHING IS SPENT ───────────────────────────────────────────────────────────
@@ -1159,6 +1220,28 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
         source_id, identity_how = events.dataset_of(cfg)
         src["dataset_id"] = source_id
         allowed, why_not, permit = events.permission(diary, source_id)
+        if not allowed and diary.no_history:
+            # THE OTHER HALF OF "NO HISTORY IS NOT A DENIAL". The diary holds NOTHING (the shipped
+            # seed was absent, or it carries no line for this dataset), so the honest sentence is
+            # not "the diary holds no admitted event" — there is no diary to hold one. This is
+            # REFUSED[no-history]: the source is named, nothing is fetched, and the two ways to
+            # ESTABLISH history are printed. It is never used for a store that HAS history.
+            refused = True
+            detail = (f"{sid} ({source_id}): this store holds NO admission history at all "
+                      f"({events.diary_path(store)} is {no_history.get('diary_state', 'absent')}), "
+                      f"so nothing has ever been admitted here — NOTE[no-history], NOT a denial: "
+                      f"no decision about this source was ever made or refused. "
+                      f"Two ways to establish history: (1) restore the shipped backfill "
+                      f"({events.seed_path()}) and re-run — the first run then writes "
+                      f"admitted{{origin: backfill}} and says so; or (2) admit it: python3 -m "
+                      f"symbiont.admission evaluate {sid} … then python3 -m symbiont.admission "
+                      f"admit {sid} --gate \"<the owner's line>\". Nothing was fetched.")
+            rec = dict(code="no-history", source=sid, dataset_id=source_id, detail=detail)
+            record["refusals"].append(rec)
+            src["refused"] = rec
+            src["cost"] = dict(requests=0, bytes_in=0, wall_s=0.0, rate_limit_waits=[])
+            say(f"REFUSED[no-history] {detail}")
+            continue
         if not allowed:
             refused = True
             detail = (f"{sid} ({source_id}): sources.yml says enabled: true, but {why_not}. "

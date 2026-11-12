@@ -57,6 +57,7 @@ COMMANDS = {
     "retention": ("the N-releases rule: freeze release bundles, sweep raw (archive or refuse)",
                   "retention"),
     "registry": ("the diary's human door: add-event · allow · deny · manual-add · override · "
+                 "bootstrap (first run of a clone: the shipped backfill) · "
                  "verify · head · show (THE INDEX: a projection, rebuilt every time) — the ONE "
                  "writer for humans", "registry"),
 }

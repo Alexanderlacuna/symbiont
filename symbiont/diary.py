@@ -70,6 +70,21 @@ from . import contract
 # the ONE literal in the tree: this module. selftest_diary_writer.py asserts exactly that.
 DIARY_NAME = "source-events.jsonl"
 
+# ── THE SHIPPED BACKFILL (req-P0-A-NEW-USER-CANNOT-MINE-THE-PERMISS) ─────────────────────────
+# A clone ships INTENT (sources.yml: enabled: true) and NO HISTORY: the export withholds the store,
+# and the store is the unit of history, so there is no diary to hold an `admitted` event. The
+# permission test then answers "the diary holds no 'admitted' event" — a true sentence about a
+# file that does not exist, which reads to a stranger as a denial. It is not one: the rule is
+# right, the bootstrap was missing.
+#
+# SEED_NAME is that bootstrap. It is a file of FACTS (class · source_id · release · evidence),
+# one JSON object per line, '# comments allowed, naming the run record each admission came from.
+# `bootstrap_from_seed()` below is the ONLY thing that turns it into lines, and it does so through
+# the same `append()` as every other transition — so the seed can never ship a chain link, a seq,
+# or a class other than admitted{origin: backfill}.
+SEED_NAME = "source-events.seed.jsonl"
+SEED_WHY = "shipped seed — no admission history in this clone"
+
 # THE LINE'S SCHEMA — the nine fields a caller supplies, and the ten that land on disk.
 EVENT_FIELDS = ("source_id", "release", "class", "actor", "why", "evidence", "origin")
 FIELDS = ("seq", "ts") + EVENT_FIELDS + ("prev_event_sha256",)
@@ -197,6 +212,20 @@ class DiaryUnreadable(DiaryRefused):
     code = "diary-unreadable"
 
 
+class SeedRefused(DiaryRefused):
+    code = "seed"
+
+
+def seed_path() -> str:
+    """`symbiont/fixtures/source-events.seed.jsonl` — the backfill the package SHIPS.
+
+    It lives in fixtures/, not in the store, on purpose: the store is what a station accumulates
+    (and what the export withholds), while fixtures/ is what the package can promise. A clone
+    therefore has the bootstrap and not the history — which is the whole shape of the fix.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", SEED_NAME)
+
+
 # ── the file ─────────────────────────────────────────────────────────────────────────────────
 def diary_path(store: str) -> str:
     """`<store>/source-events.jsonl` — the store is the unit of history, so it is beside it."""
@@ -243,6 +272,18 @@ class Read:
     @property
     def truncated(self) -> bool:
         return bool(self.problems)
+
+    @property
+    def no_history(self) -> bool:
+        """NO DIARY AT ALL — which is not the same fact as DENIED HISTORY.
+
+        True when this store has never had an event written into it: the file is absent, or it is
+        present and empty. False the moment it holds one complete line, even if that line says
+        something the run will refuse — because then there IS history, and the refusal may speak
+        about it. A caller that needs the difference (the loop, req-P0-A-NEW-USER-CANNOT-MINE-THE-
+        PERMISS) asks HERE, and never derives it from "permission said no".
+        """
+        return not self.events and not self.problems
 
     def report(self) -> str:
         return report(self.path, self.problems)
@@ -321,6 +362,102 @@ def verify(store: str) -> tuple[Read, list[dict]]:
     written by a run record and repeated by the manifest is for, `head_matches()`.)"""
     r = read(store)
     return r, list(r.problems)
+
+
+# ── THE SHIPPED SEED AND ITS ONE USE ─────────────────────────────────────────────────────────
+def read_seed(seed: str | None = None) -> list[dict]:
+    """The shipped backfill, read as FACTS — never as lines.
+
+    One JSON object per line, blank lines and '#' comment lines allowed (the seed explains itself to
+    whoever opens it). A fact may carry class · source_id · release · origin · why · evidence, and
+    never seq/prev_event_sha256: the chain is the writer's to assign, so a seed cannot ship a link
+    it cannot prove. Every fact must be `admitted`{origin: backfill} — a seed that could carry
+    another class would be a way to smuggle an unestablished fact into a stranger's diary through a
+    file in the package, which is exactly what this row must not build.
+    """
+    path = seed or seed_path()
+    facts: list[dict] = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw_lines = fh.readlines()
+    except FileNotFoundError as e:
+        raise SeedRefused(f"the shipped seed is not on disk: {path} — the backfill cannot be "
+                          f"read, so no admission history can be established from it") from e
+    for i, raw in enumerate(raw_lines, start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            f = json.loads(line)
+        except Exception as e:                       # noqa: BLE001 — the refusal IS the report
+            raise SeedRefused(f"{path} line {i} is not JSON ({type(e).__name__}: {e})") from e
+        if not isinstance(f, dict):
+            raise SeedRefused(f"{path} line {i} is a {type(f).__name__}, not an event object")
+        if f.get("class") != "admitted" or f.get("origin") != "backfill":
+            raise SeedRefused(
+                f"{path} line {i} is class={f.get('class')!r} origin={f.get('origin')!r} — the seed "
+                f"may only carry admitted{{origin: backfill}}: it restores history a run record "
+                f"already established, and nothing else")
+        if not str(f.get("source_id") or "").strip():
+            raise SeedRefused(f"{path} line {i} names no source_id (the dataset identity "
+                              f"<publisher>:<dataset>) — an admission of nothing is not a fact")
+        if not isinstance(f.get("evidence") or {}, dict):
+            raise SeedRefused(f"{path} line {i}: evidence must be an object")
+        facts.append(dict(f, seed_line=i))
+    return facts
+
+
+def bootstrap_from_seed(store: str, source_ids=None, *, why: str = SEED_WHY,
+                        seed: str | None = None) -> dict:
+    """Establish a store's INITIAL admission history from the shipped seed.
+
+    This is the bootstrap a clone needs, and it is NOT a bypass of the permission test — it is what
+    the permission test has been waiting for. `enabled: true` says MAY WE FETCH; the diary says
+    SOMEBODY DECIDED. In a clone nobody has decided yet — not because the decision was refused, but
+    because the store (the unit of history) is not redistributed. So the admissions a SHIPPED run
+    record already established are written as `admitted{origin: backfill}`, each naming the
+    artefact it came from and each SAYING how it started: `origin: backfill` and the why
+    `<shipped seed — no admission history in this clone>`. The ledger is never silent about it.
+
+    Two refusals of scope, both by name:
+      · a store that ALREADY HOLDS HISTORY is left alone: the seed is a first-run backfill, and an
+        `admitted` written over a running station would be a decision nobody made;
+      · a dataset this sources.yml does not declare-and-enable gets nothing: an admission for a
+        source the operator switched off is history about a decision nobody made either.
+
+    Idempotent in effect: run it on a bootstrapped store and it writes nothing (the store has
+    history). Returns {seed, seed_sha256, why, admitted[], skipped[]} — the run record and the
+    caller print every line of it.
+    """
+    path = seed or seed_path()
+    facts = read_seed(path)
+    with open(path, "rb") as fh:
+        seed_sha = sha(fh.read())
+    out = dict(seed=path, seed_sha256=seed_sha, why=why, admitted=[], skipped=[])
+    r = read(store)
+    if not r.no_history:
+        out["skipped"].append(dict(
+            source_id="",
+            why=(f"this store already holds {len(r.events)} line(s) of history — the seed is a "
+                 f"FIRST-run backfill, so nothing was written and nothing was changed")))
+        return out
+    allow = None if source_ids is None else set(source_ids)
+    for f in facts:
+        sid = f["source_id"]
+        if allow is not None and sid not in allow:
+            out["skipped"].append(dict(
+                source_id=sid, why="not declared and enabled in this sources.yml — an admission "
+                                    "for a source nobody asked to fetch is not this run's to write"))
+            continue
+        ev = dict(f.get("evidence") or {})
+        ev.update(seed=path, seed_sha256=seed_sha, seed_line=f["seed_line"], origin_why=why)
+        ev.setdefault("source_id_source", "declared:publisher+dataset")
+        line = append(store, "admitted", source_id=sid, why=why, actor="operator",
+                      release=f.get("release"), evidence=ev, origin="backfill")
+        out["admitted"].append(dict(source_id=sid, seq=line["seq"], origin="backfill",
+                                    release=f.get("release"),
+                                    artefact=str((f.get("evidence") or {}).get("artefact") or "")))
+    return out
 
 
 # ── the append (THE ONE WRITER) ──────────────────────────────────────────────────────────────
