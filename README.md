@@ -1,7 +1,11 @@
-# SYMBIONT — a data-mining machine you can point at any source
+# SYMBIONT — a machine for running data stations
 
 > **Public subset.** A few cited paths are held back by policy; each one — what it is, why, what it would prove, how to request it — is in
 > [`docs/WITHHELD.md`](docs/WITHHELD.md).
+
+Two words, because both matter. A **station** is a governed pipeline you point at sources: it decides what it may fetch, fetches it, checks the numbers,
+stores what the licence allows, and hands over a corpus you can defend. This repository is the **machine** that runs such a station — and, because the
+guarantees are generic, more than one.
 
 SYMBIONT is a **machine for turning sources into a corpus you can defend**. It finds candidate sources, judges whether they can be used, writes the
 adapter, trials it in a sandbox, writes the evidence card, and admits it — then fetches, verifies, stores and hands over. Point it at anything that publishes
