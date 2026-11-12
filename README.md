@@ -280,6 +280,30 @@ ships one pinned example: `@cyanheads/pubmed-mcp-server` 2.12.0, consumed over s
 tool that cannot say how many records it has is a tool, not a source* — `REFUSED[no-count-endpoint]`. That single rule is why a repository is refused as a
 source and an MCP that answers "0 of 399" is accepted.
 
+## It keeps what the licence allows — in files, not in a database
+
+Downloading is not the same as storing. The station stores a source's data **only if the terms allow it**, and it records which terms it read:
+
+```
+permitted and stored      public domain / CC0 / CC-BY (with attribution) / no restrictions    → rows kept, licence line on every row
+permitted with limits     abstracts only under the record's own whitelisted licence          → accession kept, abstract text NOT stored
+not permitted             terms forbid storage, or could not be read                          → REFUSED[licence-unreadable]; nothing lands
+```
+
+**The store is database-agnostic — it is plain files, on purpose:**
+
+```
+<store>/raw/        the payloads as fetched, content-addressed by hash (you can re-derive from these with no network)
+<store>/records/    the normalised rows, one file per source per release
+<store>/xref/       the joins between sources, with their conflict counts
+<store>/view/       the published table (TSV) + its .schema.json and .provenance.json sidecars
+<store>/digest/     measurements about the store: releases, gaps, staleness, counts
+<store>/runs/       one JSON record per run: sources, counts, cost, refusals, config and spec hashes
+```
+
+No server, no schema migration, no vendor. Load it into Postgres, SQLite, DuckDB or parquet later if you want a database — the files are the source of truth and
+the manifest tells a loader exactly what it is getting. A station that needed a database to exist could not be handed to a lab that has none.
+
 ## What a run produces (a test drive, not a delivery)
 
 Nothing here has been handed over to anyone yet. This is the artefact shape from one run we made on our own machine, from public data, in ~35 s:
