@@ -1,0 +1,30 @@
+{
+  "benchmark": "BioASQ (elicit/elicit-paper-search-eval data/bioasq.jsonl, frozen)",
+  "cutoffs": [
+    10,
+    20,
+    50
+  ],
+  "input_sha256": "7031ed7d91f6bb07147d1e212914b1eba7a6c7ff8b975741d4e263bac1c1aa69",
+  "macro_recall": {
+    "10": 0.09296816886522768,
+    "20": 0.135303558347676,
+    "50": 0.1671022355581179
+  },
+  "match_tier_counts": {
+    "pmid": 84
+  },
+  "matching": "PMID, then DOI, then exact normalized title; one credit per gold paper",
+  "mcp_calls": 102,
+  "micro_recall": {
+    "10": 0.08159392789373814,
+    "20": 0.11764705882352941,
+    "50": 0.15939278937381404
+  },
+  "num_error_questions": 0,
+  "num_questions": 50,
+  "retrieval_path": "OUR literature arm: PubMed search (NCBI) + EuropePMC records via the pinned MCP server @cyanheads/pubmed-mcp-server@2.12.0, stdio JSON-RPC (symbiont/literature/mcp.py + adapters/pubmed.py)",
+  "subset": "first 50 questions of 50 requested",
+  "total_gold": 527,
+  "wall_s": 120.3
+}

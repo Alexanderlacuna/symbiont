@@ -144,6 +144,25 @@ store" as a statement about the STATION, not about the biology.
 The coverage engine already says this without the reader having to infer it: `research_check` reports `complete: false` with
 `missing: [mgi_phenotype_annotations, pubmed]`, and states `acquisition performed: NO · corpus modified: NO`.
 
+### 9b · THE READ DOOR'S CONTRACT — statuses, no asserts, one clock
+Four rules, each learned by a real end-to-end run rather than by a review.
+
+```
+1 A CLOSED STATUS SET. Every response carries exactly one of: ok · empty · refused · unavailable · error, plus a `reason` code. "empty" means the query
+  succeeded and nothing matched; "unavailable" means the evidence or capability is missing; "refused" means the door declined on purpose; "error" means a
+  known, reported failure. An unexpected exception is never a transport event.
+2 A READ PATH NEVER ASSERTS. Assertions guard the writer's invariants; a reader meets the world and must refuse by name. A missing release becomes
+  `missing_release` on that item; an unparseable instant becomes `uncomparable_timestamp`; the rest of the answer still returns. (Two crashes in one day
+  came from exactly this: an assert, and a comparison.)
+3 ONE CLOCK. Timestamps are compared through one normaliser: a naive timestamp is read as UTC and marked aware, never mixed with an aware one. Every
+  caller uses it — the `since` filter, run records, digests, the manifest, both receipt readers.
+4 THE CHECK IS A SCRIPT. `annot/e2e_read.py` calls every read tool against a store and asserts: a status from the closed set, no JSON-RPC error for a
+  well-formed call, every item carrying accession · source · release · fetched_at · sha256, and the store's manifest unchanged afterwards. It runs in a
+  clone, and it is the reason the two crashes above are now regression-tested.
+```
+
+A well-formed request may legitimately receive `empty`, `unavailable` or `refused`. What it may never receive is an unexplained internal error.
+
 ## 10 · FEDERATION — a station as another station's source
 A handover manifest is source-shaped: rows, counts, release, licence, per-row provenance, hashes. So one station's output can be another station's input,
 through the same funnel — no new machinery, one adapter. The obligations are a contract, not an aspiration, and they live in

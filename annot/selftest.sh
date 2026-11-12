@@ -24,6 +24,11 @@
 #                 [view-unreceipted] — 0 items, exit 3, the missing sidecar and the regenerating
 #                 command named, the .tsv untouched — while the same store WITH its sidecars answers;
 #                 and harvester-view/ (when present) carries a receipt that agrees with its tsv
+# plus (req-P1-WHAT-CHANGED-CANNOT-COMPARE-A-NAIVE):
+#   I WHAT_CHANGED  one normaliser for every timestamp: an ordinary date answers (it used to raise
+#                 TypeError out of the `since` filter and reach every door as -32603), a naive
+#                 finished_at is handled identically to an aware one, and an unplaceable instant is
+#                 REPORTED on the item as uncomparable_timestamp instead of dropped or raised
 set -u
 export PYTHONDONTWRITEBYTECODE=1   # the core writes no .pyc into the farm either
 FARM=$(cd "$(dirname "$0")/.." && pwd)
@@ -166,7 +171,11 @@ import json, sys
 tmp = sys.argv[1]
 checks = [("gene_dossier", "empty-gene.json", "no_record_for_query"),
           ("gene_xref", "empty-xref.json", "no_record_for_query"),
-          ("phenotype_evidence", "empty-pheno.json", "source_not_in_store"),
+          # req-P1-THE-DOOR-READS-THE-PHENOTYPE-ARM — UPDATED DELIBERATELY: the store HOLDS
+          # phenotypes/view/gene_phenotype.v1.tsv (699 annotations), so Trp53's empty result is no
+          # longer "the source is missing" — it is "the arm is here, this gene has no row in it".
+          # Keeping source_not_in_store here would re-tell the lie this row removed.
+          ("phenotype_evidence", "empty-pheno.json", "no_phenotype_for_gene"),
           ("traits_containing", "empty-trait.json", "no_marker_name_contains_term")]
 rc = 0
 for tool, name, reason in checks:
@@ -182,10 +191,52 @@ for tool, name, reason in checks:
 sys.exit(rc)
 PY
 [ $? -eq 0 ] && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
-UNREACH=$(python3 -c "import json;print(','.join(u['source'] for u in json.load(open('$T/empty-pheno.json'))['provenance']['unreachable']))")
-[ "$UNREACH" = "mgi_phenotype_annotations" ] \
-  && ok "the empty result NAMES the unreachable source: $UNREACH" \
-  || no "unreachable sources not named (got '$UNREACH')"
+# req-P1-THE-DOOR-READS-THE-PHENOTYPE-ARM — UPDATED DELIBERATELY: this assertion used to demand
+# 'mgi_phenotype_annotations', a name NO row, receipt or run in the store ever carried — it pinned the
+# door's guess instead of the view's truth, which is exactly the lie this row exists to remove. What it
+# asserts now is the rule that replaces it: the door's lookup name IS the view's own `source` column.
+SRC_IN_VIEW=$(python3 - "$STORE" <<'PY'
+import glob, sys
+f = sorted(glob.glob(sys.argv[1] + "/phenotypes/view/gene_phenotype.v*.tsv"))[-1]
+with open(f) as fh:
+    rows = [l.split("\t") for l in fh.read().splitlines()[1:] if l.strip()]
+print(sorted({r[9] for r in rows if len(r) > 9}))
+PY
+)
+SRC_IN_DOOR=$(python3 -c "import annot.core as c;print(sorted({c.PHENOTYPE_SOURCE}))")
+SRC_IN_MISSING=$(python3 -c "import annot.core as c;print(sorted({s for s in c.MISSING_SOURCES if s == c.PHENOTYPE_SOURCE}))")
+if [ "$SRC_IN_VIEW" = "$SRC_IN_DOOR" ] && [ "$SRC_IN_VIEW" = "$SRC_IN_MISSING" ]; then
+  ok "the door's phenotype source lookup IS the view's own 'source' column: $SRC_IN_DOOR (one definition, not two)"
+else
+  no "source-name lookup differs from the view's source column: view=$SRC_IN_VIEW door=$SRC_IN_DOOR missing=$SRC_IN_MISSING"
+fi
+# THE OTHER HALF OF THE SAME RULE, new here because an arm-present store can no longer show it: strip
+# the arm from a symlinked copy of the same store and the door must STILL say source_not_in_store and
+# name that same source — 'no arm in this store' must survive as a distinguishable answer.
+NOARM="$T/store-no-phenotype-arm"
+cp -as "$STORE" "$NOARM" 2>/dev/null; rm -rf "$NOARM/phenotypes"
+ANNOT_STORE="$NOARM" python3 -m annot phenotype_evidence --gene Brca1 > "$T/noarm-pheno.json" 2>"$T/noarm.err"
+NORE=$(python3 - "$T/noarm-pheno.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+un = [u["source"] for u in (d.get("provenance") or {}).get("unreachable", [])]
+print("%s|%s|%s|%d|%s" % (d.get("status"), d.get("reason"), ",".join(un),
+                           len(d.get("items") or []), (d.get("message") or "")[:70]))
+PY
+)
+IFS='|' read -r NR_ST NR_RE NR_UN NR_N __ <<<"$NORE"
+# The reason depends on whether the GENE resolves in the store being read: a live store knows Brca1 and answers
+# source_not_in_store; a small fixture may not know it and answers no_record_for_query_and_no_source_in_store.
+# Both are a NAMED ABSENCE and both name the missing source, so the check asserts THAT, not one spelling.
+if [ "$NR_ST" = "empty" ] \
+   && { [ "$NR_RE" = "source_not_in_store" ] || [ "$NR_RE" = "no_record_for_query_and_no_source_in_store" ]; } \
+   && [ "$NR_UN" = "mgi_genepheno" ] \
+   && [ "$NR_N" = "0" ] && ! grep -qE 'Traceback \(most recent call last\)' "$T/noarm.err"; then
+  ok "a store with NO phenotype view names the absence (reason=$NR_RE) and names $NR_UN — whichever gene resolution the store allows"
+else
+  no "arm-stripped store did not keep the named absence: $NORE"
+fi
+rm -rf "$NOARM"
 
 echo "== E · OFFLINE: the store answers with every external source torn away =="
 BEFORE=$(manifest)
@@ -537,6 +588,114 @@ PY
 else
   ok "H6 (d) no harvester-view/ in this tree (looked for $HV/mouse_gene.v1.tsv) — the published-view check does not apply here, and says so"
 fi
+
+echo "== I · WHAT_CHANGED PLACES EVERY TIMESTAMP AND NEVER MIXES NAIVE WITH AWARE =="
+# (req-P1-WHAT-CHANGED-CANNOT-COMPARE-A-NAIVE) The fault this section pins: `what_changed(source=mgi,
+# since=2026-11-01)` — an ordinary question, date only — parsed NAIVE while the run records parsed
+# AWARE, so the `since` filter raised `TypeError: can't compare offset-naive and offset-aware
+# datetimes` and every door above it answered JSON-RPC -32603. The fixture is the real store with a
+# REPLACED runs/ directory: five records identical in every field except their instant, so the
+# comparison itself is what is under test, not the store's data.
+WCS="$T/wc-store"
+cp -as "$STORE" "$WCS" 2>/dev/null
+rm -rf "$WCS/runs"
+mkdir -p "$WCS/runs"
+python3 - "$WCS/runs" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+def rec(run_id, stamp, has=True):
+    r = {"run_id": run_id, "sources": {"mgi": {
+        "discover": {"release": "mgi-2026-11-02", "published_count": 241},
+        "normalise": {"rows_in": 241, "records": 241, "rejects": 0},
+        "fetch": {"new": True}, "verify": {"ok": True}}}}
+    if has:
+        r["finished_at"] = stamp
+    with open(os.path.join(d, run_id + ".json"), "w") as fh:
+        json.dump(r, fh, sort_keys=True, indent=2)
+rec("wc-aware",  "2026-11-02T00:00:00+00:00")
+rec("wc-naive",  "2026-11-02T00:00:00")
+rec("wc-early",  "2026-10-01T00:00:00")
+rec("wc-bad",    "eleven-ish")
+rec("wc-absent", None, has=False)
+PY
+
+ANNOT_STORE="$WCS" python3 -m annot call what_changed --json '{"source":"mgi","since":"2026-11-01"}' \
+  > "$T/wc-date-since.json" 2>"$T/wc-date-since.err"
+WCRC=$?
+ANNOT_STORE="$WCS" python3 -m annot call what_changed \
+  --json '{"source":"mgi","since":"2026-11-01T00:00:00+00:00"}' > "$T/wc-aware-since.json" 2>&1
+
+printf '%s\n' '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"annot-selftest","version":"1"}}}' \
+              '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+              '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"what_changed","arguments":{"source":"mgi","since":"2026-11-01"}}}' \
+  | ANNOT_STORE="$WCS" python3 -m annot.mcp_server > "$T/wc-mcp.jsonl" 2>"$T/wc-mcp.err"
+python3 - "$T/wc-mcp.jsonl" <<'PY' > "$T/wc-mcp.json"
+import json, sys
+for line in open(sys.argv[1]):
+    m = json.loads(line)
+    if m.get("id") == 1:
+        sys.stdout.write(m["result"]["content"][0]["text"])
+        rpc = {"error": m.get("error"), "isError": m["result"].get("isError")}
+        open(sys.argv[1] + ".rpc", "w").write(json.dumps(rpc))
+PY
+
+WCOUT=$(python3 - "$T" "$WCRC" <<'PY'
+import datetime, json, os, sys
+from annot.core import _iso
+T, rc = sys.argv[1], sys.argv[2]
+def p(pass_, msg):
+    print("%s|%s" % ("PASS" if pass_ else "FAIL", msg))
+err = open(os.path.join(T, "wc-date-since.err")).read()
+raw = open(os.path.join(T, "wc-date-since.json")).read()
+d = json.loads(raw)
+items = {i["run_id"]: i for i in d["items"]}
+p(rc == "0" and d["status"] == "ok" and not items == {} and "Traceback" not in err,
+  "the row's own call what_changed(source=mgi, since=2026-11-01) answers (exit %s, status=%s, %d items, no traceback)"
+  % (rc, d["status"], len(d["items"])))
+p(d.get("reason") is None and (d.get("counts") or {}).get("uncomparable_timestamp") == 2,
+  "no refusal and the two unplaceable records are COUNTED: status=%s reason=%r counts.uncomparable_timestamp=%r"
+  % (d.get("status"), d.get("reason"), (d.get("counts") or {}).get("uncomparable_timestamp")))
+def iso(s):
+    s = s.strip()
+    if s[-1:] in ("Z", "z"):
+        s = s[:-1] + "+00:00"
+    x = datetime.datetime.fromisoformat(s)
+    return x if x.tzinfo else x.replace(tzinfo=datetime.timezone.utc)
+a, n = items.get("wc-aware"), items.get("wc-naive")
+proj = lambda i: (i["value"], i["source"], i["release"], i["accession"], i["verify_ok"], iso(i["fetched_at"]))
+p(a is not None and n is not None and proj(a) == proj(n),
+  "a NAIVE finished_at is handled IDENTICALLY to an AWARE one: wc-naive %r and wc-aware %r give the same item (same instant %r, same value, same release)"
+  % (n and n["fetched_at"], a and a["fetched_at"], a and iso(a["fetched_at"])))
+aware = json.load(open(os.path.join(T, "wc-aware-since.json")))
+p(aware.get("items") == d["items"] and bool(d["items"]),
+  "a naive `since` date and its aware twin select the SAME items: since=2026-11-01 == since=2026-11-01T00:00:00+00:00 (%d items, byte-identical list)" % len(d["items"]))
+p("wc-early" not in items,
+  "a naive instant BEFORE `since` is still excluded: wc-early (finished_at=2026-10-01T00:00:00) is NOT in the answer (%d items)" % len(items))
+b, m = items.get("wc-bad"), items.get("wc-absent")
+p(b is not None and b["reason"] == "uncomparable_timestamp" and b["fetched_at"] == "eleven-ish",
+  "an UNPARSEABLE timestamp is reported ON the item: wc-bad reason=%r fetched_at=%r, and the rest of the answer returns (%d items)"
+  % (b and b.get("reason"), b and b.get("fetched_at"), len(items)))
+p(m is not None and m["reason"] == "uncomparable_timestamp" and "fetched_at" in m and m["fetched_at"] is None,
+  "a MISSING timestamp is reported ON the item too: wc-absent reason=%r fetched_at key present=%s value=%r"
+  % (m and m.get("reason"), m is not None and "fetched_at" in m, m and m.get("fetched_at")))
+rpc = json.load(open(os.path.join(T, "wc-mcp.jsonl.rpc")))
+mcp_text = open(os.path.join(T, "wc-mcp.json")).read()
+p(rpc["error"] is None and rpc["isError"] is False and mcp_text == raw,
+  "the MCP door has no JSON-RPC error for it: error=%r isError=%r, and its text is the CLI's bytes (cmp == 0, %d bytes)"
+  % (rpc["error"], rpc["isError"], len(raw)))
+probes = [("2026-11-01", True), ("2026-11-02T00:00:00", True), ("2026-11-02T00:00:00Z", True),
+          ("2026-11-02T00:00:00+02:00", True), ("eleven-ish", False), ("", False), (None, False)]
+got = [(v, _iso(v)) for v, _ in probes]
+p(all((c is not None and c.tzinfo is not None) if want_instant else c is None
+      for (v, want_instant), (_, c) in zip(probes, got)),
+  "_iso() is the ONE normaliser and every instant it returns is AWARE (tzinfo set), every unparseable one is None: %s"
+  % "; ".join("%r->%s" % (v, "None" if c is None else ("aware " + c.isoformat())
+                            if c.tzinfo is not None else ("NAIVE " + c.isoformat())) for v, c in got))
+PY
+)
+echo "$WCOUT" | grep -v '^$' | sed 's/^PASS|/  PASS /; s/^FAIL|/  FAIL /'
+PASS=$((PASS+$(echo "$WCOUT" | grep -c '^PASS')))
+FAIL=$((FAIL+$(echo "$WCOUT" | grep -c '^FAIL')))
 
 echo "== F · THE STORE WAS NOT TOUCHED BY ANY OF THE ABOVE =="
 AFTER=$(manifest)

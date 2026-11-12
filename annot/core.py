@@ -20,6 +20,11 @@ The item shape, stated once and enforced structurally (see `_assert_items`):
                  clock reading at query time (that is what makes two doors byte-identical)
   * `sha256`     the content hash of the bytes the item was read from (content-addressed raw
                  snapshot hash, or the hash of the run/state record for an event item)
+  * `reason`     (change events only) null when the item's own instant could be placed against the
+                 query, else the NAMED reason it could not — today `uncomparable_timestamp`: the
+                 record carries no instant, or one `_iso()` cannot parse, so the item is REPORTED
+                 with that reason instead of being dropped or crashing the door
+                 (req-P1-WHAT-CHANGED-CANNOT-COMPARE-A-NAIVE)
 """
 from __future__ import annotations
 
@@ -90,8 +95,17 @@ STORE_CREATE_COMMANDS = (
 # an absence that is not named is indistinguishable from a blank.
 STORE_SOURCES = ("ensembl_biomart", "mgi")
 
+# THE PHENOTYPE ARM'S NAME IS THE NAME THE VIEW CARRIES (req-P1-THE-DOOR-READS-THE-PHENOTYPE-ARM).
+# The store's phenotype view is <store>/phenotypes/view/gene_phenotype.v<N>.tsv and it has a `source`
+# column; all 699 annotations in the live store carry the token below. Until 2026-11-12 the door
+# looked for the name `mgi_phenotype_annotations`, which no row, no receipt and no run record ever
+# carried — so a reader was told the station LACKED an arm the station held. One definition, here:
+# the lookup name and the view's own `source` value are the same string, and selftest.sh asserts it.
+PHENOTYPE_VIEW = "gene_phenotype"
+PHENOTYPE_SOURCE = "mgi_genepheno"
+
 MISSING_SOURCES = {
-    "mgi_phenotype_annotations": {
+    PHENOTYPE_SOURCE: {
         "why": "no phenotype-annotation file has been harvested into this store",
         "needed": "MGI GenePheno.rpt / MGI_PhenoGenoMP.rpt (or IMPC), joined on MGI accession",
         "would_answer": "phenotype_evidence",
@@ -126,9 +140,12 @@ SPECS = {
         "params": {"gene": ("string", True, None), "limit": ("integer", False, 50)},
     },
     "phenotype_evidence": {
-        "purpose": ("Phenotype annotations asserted for one gene, one item per annotation with its "
-                    "accession. If no phenotype source is in the store the result is a NAMED empty "
-                    "result stating which source is missing — never a blank."),
+        "purpose": ("Phenotype annotations asserted for one gene, one item per annotation: the MP term "
+                    "id and label, the evidence code, the citation as the item's accession, the "
+                    "genotype statement and the allele marker id. If no phenotype arm is in the store "
+                    "the result is a NAMED empty result stating which source is missing; if the arm "
+                    "IS present but names no annotation for the gene, the result says that instead — "
+                    "never a blank, and never 'no source' for an arm the station holds."),
         "params": {"gene": ("string", True, None), "limit": ("integer", False, 50)},
     },
     "publications_for": {
@@ -365,13 +382,38 @@ def _read_tsv(path: str) -> list[dict]:
     return rows
 
 
-def _iso(dt: str) -> datetime | None:
-    if not dt:
+def _iso(dt) -> datetime | None:
+    """THE ONE timestamp normaliser — every instant this module COMPARES goes through it.
+
+    The rule, stated once: an instant is returned AWARE. `Z`/`z` and an explicit offset parse
+    aware; a bare date (`2026-11-01`) or any offset-less timestamp parses NAIVE, and a naive
+    instant is READ AS UTC and marked aware HERE. Two timestamps of either shape can therefore
+    always be compared, and a naive one can never meet an aware one at a `<` (measured
+    2026-11-12: `what_changed(since=2026-11-01)` raised `TypeError: can't compare offset-naive
+    and offset-aware datetimes` out of the `since` filter, and every door above it reported
+    JSON-RPC -32603 instead of a change list).
+
+    An absent, blank, non-string or unparseable value returns None: the caller REPORTS that it
+    cannot place the instant (`uncomparable_timestamp`) rather than raising. A normaliser that
+    raises is the fault this function exists to remove.
+    """
+    if not isinstance(dt, str) or not dt.strip():
         return None
+    s = dt.strip()
+    if s[-1:] in ("Z", "z"):
+        s = s[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        d = datetime.fromisoformat(s)
     except ValueError:
         return None
+    if d.tzinfo is None:
+        return d.replace(tzinfo=timezone.utc)      # a bare instant is UTC — and it is now AWARE
+    return d
+
+
+# the sort key for an item whose instant cannot be placed: after every real instant, and never
+# a None in a key that is compared against datetimes.
+_TS_LAST = datetime.max.replace(tzinfo=timezone.utc)
 
 
 def _norm_arg(tool: str, name: str, typ: str, raw):
@@ -558,6 +600,51 @@ class Store:
             return by_gene
         return self._memo("lit_idx", build)
 
+    # -- the phenotype arm (req-P1-THE-DOOR-READS-THE-PHENOTYPE-ARM, 2026-11-12) -------------------
+    # The store's phenotype view is <store>/phenotypes/view/gene_phenotype.v<N>.tsv, read EXACTLY as the
+    # literature view is: highest version wins, LAZILY, and ABSENT-TOLERANT — a store without a
+    # phenotype arm is the normal case and the door says so by name. The arm is the same shape as the
+    # literature arm, so it is read the same way; what differs is that its `source` column carries
+    # PHENOTYPE_SOURCE, which is the name the door looks for.
+    @property
+    def phenotype_rows(self) -> list[dict]:
+        def load():
+            d = self.p("phenotypes", "view")
+            if not os.path.isdir(d):
+                return []
+            best = None
+            for f in sorted(os.listdir(d)):
+                m = re.match(r"%s\.v(\d+)\.tsv$" % PHENOTYPE_VIEW, f)
+                if m and (best is None or int(m.group(1)) > best[0]):
+                    best = (int(m.group(1)), f)
+            return _read_tsv(os.path.join(d, best[1])) if best else []
+        return self._memo("pheno", load)
+
+    @property
+    def phenotype_provenance(self) -> dict:
+        """The arm's RECEIPT: terms_release, run_id (and the records sha256) travel with every item."""
+        def load():
+            d = self.p("phenotypes", "view")
+            if not os.path.isdir(d):
+                return {}
+            best = None
+            for f in sorted(os.listdir(d)):
+                m = re.match(r"%s\.v(\d+)\.provenance\.json$" % PHENOTYPE_VIEW, f)
+                if m and (best is None or int(m.group(1)) > best[0]):
+                    best = (int(m.group(1)), f)
+            return _read_json(os.path.join(d, best[1])) if best else {}
+        return self._memo("pheno_prov", load)
+
+    @property
+    def arms_present(self) -> set:
+        """The sources this store can ACTUALLY answer from — the list a named absence must consult.
+
+        One definition, asked by every place that would otherwise name a source as unreachable: an arm
+        the store holds is not unreachable, and saying it is would be the honest-looking lie this row
+        exists to remove.
+        """
+        return self._memo("arms", lambda: ({PHENOTYPE_SOURCE} if self.phenotype_rows else set()))
+
     def resolve(self, gene: str) -> tuple[dict | None, str]:
         """A gene may be named by symbol (case-insensitive), MGI accession or Ensembl gene id."""
         idx = self.view_index
@@ -670,7 +757,10 @@ class Store:
                 rec["_path"] = path
                 rec["_sha256"] = _sha256_file(path)
                 out.append(rec)
-            out.sort(key=lambda r: (r.get("finished_at") or "", r.get("run_id") or ""))
+            # a run record's timestamp is a STRING here and may be absent; coercing the sort key
+            # keeps one malformed record from raising TypeError out of every door's store read
+            # (`5 < "x"`), while leaving the order of every well-formed store exactly as it was.
+            out.sort(key=lambda r: (str(r.get("finished_at") or ""), str(r.get("run_id") or "")))
             return out
         return self._memo("runs", build)
 
@@ -837,6 +927,14 @@ def _assert_items(obj, path="response") -> None:
                 raise AssertionError("item at %s has no accession: %r" % (path, obj))
             for k in ("source", "release", "fetched_at", "sha256"):
                 if not obj.get(k):
+                    # ONE named exception (req-P1-WHAT-CHANGED-CANNOT-COMPARE-A-NAIVE): a change
+                    # item whose record carries NO instant says so ON the item
+                    # (reason=uncomparable_timestamp) instead of being dropped or raising. The
+                    # key must still be PRESENT — the item may never hide that it has no instant
+                    # — and no other item, and no other tool, may be blank here.
+                    if (k == "fetched_at" and "fetched_at" in obj
+                            and obj.get("reason") == "uncomparable_timestamp"):
+                        continue
                     raise AssertionError("item at %s has no %s: %r" % (path, k, obj))
         for k, v in obj.items():
             _assert_items(v, path + "." + str(k))
@@ -897,11 +995,21 @@ def _unpublished_subject(tool: str, a: dict, st: Store, xr: dict,
     return body
 
 
-def _unreachable_for(tool: str, sections=()) -> list[dict]:
+def _unreachable_for(tool: str, sections=(), st: "Store | None" = None) -> list[dict]:
+    """The sources this answer would have needed and the store does NOT hold.
+
+    `st` is passed by every read door: a source listed in MISSING_SOURCES is a source THE SURFACE
+    NEEDS, not a source the store LACKS — `mgi_genepheno` has been harvested since the phenotype arm
+    landed, so it is unreachable only in a store whose phenotype view is absent (st.arms_present).
+    Without this, every phenotype answer would name its own arm as missing.
+    """
+    present = st.arms_present if st is not None else set()
     out = []
     wanted = set(MISSING_SOURCES)
     for name in sorted(wanted):
         m = MISSING_SOURCES[name]
+        if name in present:
+            continue
         if m["would_answer"] == tool or m["would_answer"] in sections:
             out.append({"source": name, "why": m["why"], "needed": m["needed"],
                         "would_answer": m["would_answer"]})
@@ -919,7 +1027,7 @@ def _clip(items: list[dict], limit: int) -> tuple[list[dict], dict]:
 def q_gene_dossier(st: Store, a: dict) -> dict:
     row, matched_by = st.resolve(a["gene"])
     unreachable = _unreachable_for("gene_dossier",
-                                   sections=("phenotype_evidence", "publications", "traits"))
+                                   sections=("phenotype_evidence", "publications", "traits"), st=st)
     if row is None:
         xr0 = st.unpublished(a["gene"])
         if xr0 is not None:
@@ -956,9 +1064,13 @@ def q_gene_dossier(st: Store, a: dict) -> dict:
               r.get("current_provider_id") or mgi, "mgi", st, "mrk_list1_gz") for r in retired],
         a["limit"])
 
-    ph = _unreachable_for("phenotype_evidence")
-    pub = _unreachable_for("publications_for")
-    tr = _unreachable_for("traits_containing")
+    ph = _unreachable_for("phenotype_evidence", st=st)
+    pub = _unreachable_for("publications_for", st=st)
+    tr = _unreachable_for("traits_containing", st=st)
+    # THE PHENOTYPE SECTION IS THE SAME READER AS THE phenotype_evidence DOOR (req-P1-THE-DOOR-READS-
+    # THE-PHENOTYPE-ARM): one shape, one source name, one presence test — a dossier that said "no
+    # arm" while the tool beside it answered from the arm would be two doors disagreeing.
+    ph_sec = _phenotype_section(st, row, a)
     sections = {
         "identity": {"status": "present", "items": ident, "total": len(ident)},
         "xref": {"status": "present" if xref_items else "empty",
@@ -967,10 +1079,9 @@ def q_gene_dossier(st: Store, a: dict) -> dict:
                  "conflicts": len(conflicts), "retired": retired_meta,
                  "reason": None if xref_items else "symbol_not_in_xref_table"},
         "phenotype_evidence": {
-            "status": "empty", "items": [], "total": 0,
-            "reason": "source_not_in_store", "source": ph[0]["source"] if ph else "",
-            "message": ("no phenotype annotation for %s can be answered from this store; the "
-                        "missing source is %s" % (sym, ph[0]["source"] if ph else "unknown")),
+            "status": ph_sec["status"], "items": ph_sec["items"],
+            "total": ph_sec["counts"]["total"], "reason": ph_sec["reason"],
+            "source": ph_sec["source"], "message": ph_sec["message"], "counts": ph_sec["counts"],
         },
         "publications": {
             "status": "empty", "items": [], "total": 0,
@@ -1034,25 +1145,101 @@ def q_gene_xref(st: Store, a: dict) -> dict:
     }
 
 
+def _phenotype_rows_for(st: Store, row: dict) -> list[dict]:
+    """The arm's rows that name THIS gene. The join keys are the gene's own accessions, upper-cased."""
+    keys = {k for k in ((row.get("mgi_id") or "").strip().upper(),
+                        (row.get("ensembl_gene_id") or "").strip().upper()) if k}
+    hits = [r for r in st.phenotype_rows
+            if keys & {(r.get("gene_id") or "").strip().upper(),
+                       (r.get("ensembl_gene_id") or "").strip().upper()}]
+    hits.sort(key=lambda r: ((r.get("phenotype_term_id") or ""), (r.get("citation") or ""),
+                             (r.get("allele_marker_id") or "")))
+    return hits
+
+
+def _phenotype_section(st: Store, row: dict | None, a: dict) -> dict:
+    """THE ONE READER OF THE PHENOTYPE ARM — one shape, one source name, one presence test.
+
+    Returns {status, reason, items, counts, source, message} and NOTHING else, because two doors (the
+    phenotype_evidence tool and the gene_dossier section) must not be able to disagree about what the
+    arm says. The three answers it can give, and they are deliberately three:
+      * the store has NO phenotype view    -> status=empty reason=source_not_in_store, source named
+      * the arm IS present, gene unnamed    -> status=empty reason=no_phenotype_for_gene, the arm's row
+                                              count in the message (the arm is NOT called missing)
+      * the arm IS present, rows for gene   -> status=ok, one item per annotation
+    An item carries the MP term id and label, the EVIDENCE CODE, the CITATION as its accession, the
+    genotype statement, the allele marker id, the source's own release stamp, and release/sha256
+    stamped from the view's receipt (terms_release · run_id) so the bytes are traceable.
+    """
+    prov = st.phenotype_provenance or {}
+    rel = prov.get("terms_release") or ""
+    run = prov.get("run_id") or ""
+    n_arm = len(st.phenotype_rows)
+    sec = {"status": "empty", "reason": "source_not_in_store", "items": [],
+           "counts": {"total": 0, "returned": 0, "truncated": False},
+           "source": PHENOTYPE_SOURCE,
+           "message": ("no phenotype-annotation source is in this store (%s): the store has no "
+                       "phenotypes/view/%s.v<N>.tsv, so zero annotations can be asserted for %s — "
+                       "named empty, not a blank" % (PHENOTYPE_SOURCE, PHENOTYPE_VIEW, a["gene"]))}
+    if not n_arm:
+        return sec                                    # (1) no arm in this store
+    if row is None:
+        sec["reason"] = "no_record_for_query"
+        sec["message"] = ("the phenotype arm IS present (%d annotation(s) in the store) but %r has no "
+                          "record in the gene view, so the arm cannot be joined to it"
+                          % (n_arm, a["gene"]))
+        return sec
+    hits = _phenotype_rows_for(st, row)
+    if not hits:                                      # (2) arm present, nothing for this gene
+        sec["reason"] = "no_phenotype_for_gene"
+        sec["message"] = ("the phenotype arm IS present (%d annotation(s) in the store, source %s) but "
+                          "none of them names %s — an empty FOR THIS GENE, not a missing source"
+                          % (n_arm, PHENOTYPE_SOURCE, row["symbol"]))
+        return sec
+    items = []
+    for r in hits:                                    # (3) arm present, rows for this gene
+        term_id = (r.get("phenotype_term_id") or "").strip()
+        cite = (r.get("citation") or "").strip()
+        items.append(dict(
+            # THE ACCESSION IS THE CITATION (the PMID the source wrote). 52 of the store's 699 rows
+            # carry none: for those the MP term id is the identifier the row does have, and an item
+            # with no accession would refuse to be emitted at all (_assert_items).
+            item("%s %s — %s" % (term_id, r.get("phenotype_term") or "?",
+                                 r.get("statement") or "?"),
+                 cite or term_id, r.get("source") or PHENOTYPE_SOURCE, st, "gene_phenotype"),
+            phenotype_term_id=term_id,
+            phenotype_term=r.get("phenotype_term") or "",
+            evidence_code=r.get("evidence_code") or "",
+            citation=cite,
+            allele_marker_id=r.get("allele_marker_id") or "",
+            statement=r.get("statement") or "",
+            source_release=r.get("source_release") or "",
+            **{"release": rel, "sha256": run, "fetched_at": r.get("fetched_at") or ""}))
+    shown, meta = _clip(items, a.get("limit") or 50)
+    sec.update(status="ok", reason=None, items=shown, counts=meta)
+    return sec
+
+
 def q_phenotype_evidence(st: Store, a: dict) -> dict:
-    unreachable = _unreachable_for("phenotype_evidence")
+    unreachable = _unreachable_for("phenotype_evidence", st=st)
     row, matched_by = st.resolve(a["gene"])
+    sec = _phenotype_section(st, row, a)
     body = {
         "annot": {"core": CORE, "core_version": CORE_VERSION, "tool": "phenotype_evidence"},
-        "status": "empty",
-        "reason": "source_not_in_store",
+        "status": sec["status"],
+        "reason": sec["reason"],
         "query": a,
-        "items": [],
+        "items": sec["items"],
+        "counts": sec["counts"],
         "subject": ({"gene": a["gene"], "matched_symbol": row["symbol"], "matched_by": matched_by,
                      "mgi_accession": row.get("mgi_id", "")} if row else
                     {"gene": a["gene"], "matched_symbol": None, "matched_by": "none"}),
-        "message": ("no phenotype-annotation source is in this store (%s); the gene %s, if it exists "
-                    "here, has no evidence that this store can assert — named empty, not a blank"
-                    % (unreachable[0]["source"] if unreachable else "none", a["gene"])),
+        "message": sec["message"],
         "provenance": provenance(st, unreachable),
     }
     if row is None:
-        body["reason"] = "no_record_for_query_and_no_source_in_store"
+        if not st.phenotype_rows:
+            body["reason"] = "no_record_for_query_and_no_source_in_store"
         xr0 = st.unpublished(a["gene"])
         if xr0 is not None:
             body["subject"]["matched_by"] = "xref_table"
@@ -1062,7 +1249,7 @@ def q_phenotype_evidence(st: Store, a: dict) -> dict:
 
 
 def q_publications_for(st: Store, a: dict) -> dict:
-    unreachable = _unreachable_for("publications_for")
+    unreachable = _unreachable_for("publications_for", st=st)
     row, matched_by = st.resolve(a["gene"])
     # THE LITERATURE ARM, WHEN THE STORE HAS ONE. evidence_level · licence · abstract_stored travel
     # with every item: a reader must be able to tell an abstract-derived claim from a full-text one,
@@ -1151,13 +1338,20 @@ def q_what_changed(st: Store, a: dict) -> dict:
     src = a["source"].strip()
     since = _iso(a["since"])
     if since is None:
+        # a malformed ARGUMENT is refused by name at every door (status=error reason=bad_request);
+        # what this row forbids is an argument set the schema ACCEPTS crashing the door instead.
         raise ToolError("what_changed.since must be an ISO-8601 instant (e.g. 2026-11-09T20:00:00Z), "
-                        "got %r" % a["since"])
-    items, considered = [], 0
+                        "got %r" % (a["since"],))
+    items, considered, uncomparable = [], 0, 0
     for run in st.runs:
-        fin = _iso(run.get("finished_at") or "")
-        if fin is None or fin < since:
-            continue
+        stamp = run.get("finished_at")
+        fin = _iso(stamp)                 # THE one normaliser: aware, or None when unplaceable
+        if fin is not None and fin < since:
+            continue                      # placeable AND before the instant: not a change since it
+        # fin is None: the record carries no instant, or one _iso() cannot parse, so the record
+        # CANNOT be placed against `since`. It is not dropped (a dropped run is a wrong answer that
+        # looks complete) and it does not raise: it is carried into the answer and says why itself.
+        placeable = fin is not None
         for name, rec in sorted((run.get("sources") or {}).items()):
             considered += 1
             if src.lower() not in ("all", "*") and name != src:
@@ -1176,16 +1370,25 @@ def q_what_changed(st: Store, a: dict) -> dict:
                 "accession": rel or name,
                 "source": name,
                 "release": rel or name,
-                "fetched_at": run.get("finished_at"),
+                "fetched_at": stamp,          # the record's own instant, unconverted and unguessed
                 "sha256": run["_sha256"],
                 "run_id": run.get("run_id"),
                 "verify_ok": ver.get("ok"),
+                "reason": None if placeable else "uncomparable_timestamp",
             })
-    items.sort(key=lambda i: (i["fetched_at"], i["source"]))
+            if not placeable:
+                uncomparable += 1
+    # placeable items in time order, then the unplaceable ones — which have no instant to sort by,
+    # so they fall after every real instant and are ordered among themselves by (source, run_id).
+    # `_TS_LAST` exists so this key never compares None to a datetime.
+    items.sort(key=lambda i: (_iso(i["fetched_at"]) or _TS_LAST,
+                              str(i.get("source") or ""), str(i.get("run_id") or "")))
     shown, meta = _clip(items, a["limit"])
     unreachable = []
     for name in sorted(MISSING_SOURCES):
         if name != src and src.lower() not in ("all", "*"):
+            continue
+        if name in st.arms_present:      # an arm the store HOLDS is not "never harvested"
             continue
         unreachable.append({"source": name, "why": MISSING_SOURCES[name]["why"],
                             "needed": MISSING_SOURCES[name]["needed"], "would_answer": "n/a (never harvested)"})
@@ -1195,7 +1398,8 @@ def q_what_changed(st: Store, a: dict) -> dict:
         "reason": None if shown else "no_run_since_instant_for_source",
         "query": a,
         "items": shown,
-        "counts": dict(meta, source_runs_considered=considered, runs_read=len(st.runs)),
+        "counts": dict(meta, source_runs_considered=considered, runs_read=len(st.runs),
+                       uncomparable_timestamp=uncomparable),
         "message": None if items else (
             "no harvest run recorded a change for source %r since %s (%d run records were read)"
             % (a["source"], a["since"], len(st.runs))),

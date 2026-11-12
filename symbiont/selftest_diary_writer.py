@@ -10,7 +10,7 @@ the proof of all of them, offline, at fixture scale, with the decisive line prin
   W2 ONE WRITER BY WRITE  an AST scan of the whole tree finds exactly ONE function that opens a
                           jsonl/diary path for writing: symbiont/diary.py:append. Any other
                           function doing it is named as a second writer. The only exempt files are
-                          the two planting selftests, and no production module may be exempt.
+                          the three planting selftests, and no production module may be exempt.
   W3 A PLANTED WRITER     a second writer planted INSIDE the tree is CAUGHT and named (the
                           detector can fail — a check that cannot fail is not a check).
   W4 ATOMIC APPEND        `append()` writes ONE line: `tail -1` is a complete JSON object, the
@@ -47,12 +47,14 @@ FARM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # the name is ASSEMBLED here, so this file is not itself a hit for W1 (the grep is a real grep).
 NAME = "source-" + "events.jsonl"
 
-# THE ONLY EXEMPTION from W2, and it is the two SELFTEST modules: a test that PLANTS a second
-# writer, a truncated tail or an altered line must write the file — that is the falsifier, not a
-# writer. The check below asserts the list is exactly these two AND that every entry is a
-# `selftest_*.py` (so nobody can exempt a production module quietly).
+# THE ONLY EXEMPTION from W2, and it is the three PLANTING selftests: a test that PLANTS a second
+# writer, a truncated tail or an altered line must write the diary file — that is the falsifier,
+# not a writer (selftest_registry plants a truncated tail to prove `registry show` refuses to
+# render over damaged history). The check below asserts the list is exactly these three AND that
+# every entry is a `selftest_*.py` (so nobody can exempt a production module quietly).
 EXEMPT = {os.path.join("symbiont", "selftest_diary.py"),
-          os.path.join("symbiont", "selftest_diary_writer.py")}
+          os.path.join("symbiont", "selftest_diary_writer.py"),
+          os.path.join("symbiont", "selftest_registry.py")}
 
 SKIP_DIRS = {"__pycache__", ".git", "store", "build", "node_modules"}
 
@@ -218,9 +220,10 @@ def main(argv=None) -> int:
         check("W2 exactly one write site in the tree — symbiont/diary.py:append",
               writers == [os.path.join("symbiont", "diary.py") + ":append"],
               f"write sites={writers}")
-        check("W2 the exemption list is exactly the two planting selftests — and nothing else",
+        check("W2 the exemption list is exactly the three planting selftests — and nothing else",
               EXEMPT == {os.path.join("symbiont", "selftest_diary.py"),
-                         os.path.join("symbiont", "selftest_diary_writer.py")}
+                         os.path.join("symbiont", "selftest_diary_writer.py"),
+                         os.path.join("symbiont", "selftest_registry.py")}
               and all(os.path.basename(e).startswith("selftest_") for e in EXEMPT),
               f"exempt={sorted(EXEMPT)} (a production module may never be exempt)")
 

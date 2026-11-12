@@ -31,7 +31,9 @@ source-unreachable | count-mismatch) or the claim could not be joined · 8 all r
                                       REFUSED by name — never silently removed)
     symbiont registry [registry …]    THE DIARY's human door (symbiont/events.py holds the only
                                       append): add-event · allow/deny (the switch, with
-                                      intent_changed) · manual-add · override · verify · head.
+                                      intent_changed) · manual-add · override · verify · head ·
+                                      show (THE INDEX: a projection of sources.yml + the diary,
+                                      rebuilt every time, disposable, sha256 in its own header).
                                       The closed transition table applies to a human's word too.
 """
 from __future__ import annotations
@@ -55,7 +57,8 @@ COMMANDS = {
     "retention": ("the N-releases rule: freeze release bundles, sweep raw (archive or refuse)",
                   "retention"),
     "registry": ("the diary's human door: add-event · allow · deny · manual-add · override · "
-                 "verify · head (the ONE writer for humans)", "registry"),
+                 "verify · head · show (THE INDEX: a projection, rebuilt every time) — the ONE "
+                 "writer for humans", "registry"),
 }
 
 
