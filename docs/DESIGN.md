@@ -173,6 +173,13 @@ may claim `verified: manifest` (transport integrity) and never `verified: upstre
 The same section states the honest limit: federation gives you the integrity of a COPY. Re-derivation from the authority is the only thing that gives you
 the data's own truth, and a corpus that mixes the two without labelling them overstates itself.
 
+**PROPOSED, NOT BUILT — owner-governed orchestration.** An "expedition" would be a route with ordered checkpoints under an owner-defined policy, and the
+policy would inherit the station's: the effective policy is `meet(station, expedition)` — permissions intersected, prohibitions unioned, budgets minimised,
+approvals unioned — so a route may narrow what it is allowed to do and never widen it, and every refusal names the layer that refused (`by=station` vs
+`by=expedition`). The parts that cannot be retrofitted cheaply are three, and they are station code: the `meet()` function, three orthogonal grants
+(write · spend · attention) with levels only as versioned presets, and the expedition as a **third actor** in the event log (`actor: expedition:<name>`)
+with the route's sha pinned in the run record and the manifest. Until those exist, this section is a design note.
+
 ## 11 · WHAT THE STATION SPEAKS — three transports, and what an "expedition" is not
 The station talks to the world in exactly three ways, and they are not interchangeable. This section exists because "does it use MCP? does it use a web search?"
 has one honest answer per job, and the answer is different for each.
