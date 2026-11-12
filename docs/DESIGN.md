@@ -209,3 +209,40 @@ THE FUNNEL   probe → evaluate → draft → sandbox → card → admit, per ca
 An expedition — *a scout with a route: ordered checkpoints, a budget per checkpoint, a verifier per checkpoint, and cargo that accumulates* — would be a
 route file laid over those three, using the same transports. Until it is built, the sentence "a scout is the discovery light looking outward; an expedition
 is a scout with a route" stays a design note, not a capability.
+
+## 12 · BOOTSTRAP — how a station becomes trustworthy in the first place
+Found the hard way (2026-11-12): a stranger cloned this repository, ran every suite green, wrote a registry, ran discovery successfully — and then could not
+mine at all, because the permission rule said `REFUSED[not-admitted]: sources.yml says enabled: true, but the diary holds no admitted event`, and a clone ships
+no diary. **Intent without history is not enough — correctly. So the initial history has to be established explicitly.**
+
+### 12.1 · Four states, never collapsed
+```
+no diary at all                     → a bootstrap may seed it                    NOTE[no-history]
+diary present, source has ADMITTED  → acquisition may proceed                   —
+diary present, source has REFUSED   → REFUSED[denied-history]  (never re-interpreted as absence)
+diary present, source absent        → REFUSED[not-admitted]     (correct for a source added to an established station)
+```
+
+### 12.2 · The seed is provenance, not setup data
+```
+A committed seed under `symbiont/fixtures/` ships with the repository (its exact filename lands with the bootstrap change): one event per source, `origin: backfill`, a dated `why`, and either a COMMITTED
+fixture run record as evidence or an explicit `evidence: {unavailable_in_clone: true, why: "the live store is not shipped (docs/WITHHELD.md)"}`. A seed that
+pointed at the 446 MB store would ship a dangling hash — the defect docs/WITHHELD.md exists to prevent one level up.
+```
+
+### 12.3 · Bootstrap is a command, and it is idempotent
+```
+python3 -m symbiont.registry bootstrap --from-seed [--why "…"]
+   already initialised (any real admission for that source)      → ALREADY_INITIALISED, zero new events
+   an explicit denial exists                                     → REFUSED[denied-history], zero new events
+   a valid seed exists and no diary/an empty diary               → append admitted{origin: backfill}, once
+   a seed naming a source that is not in sources.yml             → REFUSED[seed-mismatch], zero new events
+an IMPORT-TIME bootstrap is forbidden: an `admitted` event nobody asked for is precisely the class of thing this design exists to prevent.
+```
+
+### 12.4 · And it stays visible forever
+```
+the index renders those rows as `admitted (backfill)`, the diary keeps `origin: backfill` and the artefact it came from, and the manifest carries the same
+words. The station must be able to say not only why it trusts a source, but HOW its initial trust state was established — that is provenance, and it is the
+difference between a clone that silently trusts `enabled: true` and one that refuses to run at all.
+```
