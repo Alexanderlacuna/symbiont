@@ -98,3 +98,32 @@ refuses it by rule.
 **Example (no biology):** rows = model × provider × context window × price per 1M tokens × measured latency · release = the vendor's pricing revision ·
 count = the vendor's own table size, or `REFUSED[no-count-endpoint]` · verifier = reproduce the price from that revision · research spec = "cheapest
 ≥1M-context model with ≤2 s TTFT", required datasets [provider_tables, latency_bench] — the same shape as any biological question, different nouns.
+
+## 9 · THE READING LAYER (and the third actor nobody names)
+The station exposes evidence through a surface that is deliberately weaker than the one that changes anything. Two authorities, three actors, and one
+artefact that needs neither.
+
+```
+READING LAYER    annot/mcp_server.py — read-only over the store, never writes it
+   gene_dossier · gene_xref · phenotype_evidence · publications_for · traits_containing · what_changed · answer
+   every item carries source · release · fetched_at · accession; `answer` refuses a sentence it cannot bind to a record
+
+MACHINE LAYER    symbiont/mcpserver.py — manages ADMISSION, does not ingest
+   source_health · source_probe · source_evaluate · source_draft · source_sandbox · source_card · source_admit
+   these shell out to the admission path; nothing here fetches or stores rows
+
+THE LOOP         symbiont/loop.py — the only thing that widens the corpus: fetch → verify count → store → view → manifest, with its own budget
+```
+
+**The three actors, not two.** Admission and ingestion are separate on purpose: whoever may permit a source is not whoever pulls its rows, and neither of
+them is whoever asks a question. That is what makes "asking can be exposed widely, admitting stays with an operator" true rather than decorative.
+
+**The boundary is WRITE AUTHORITY, not data access.** Both layers read the same store. One may change permissions; the other may only ask. A reader with
+the machine door cannot silently widen the corpus; a lane with the loop cannot silently widen the permissions.
+
+**The third surface needs no authority at all: the MANIFEST.** A recipient — an uploader inside another project, a bucket loader, `sha256sum` — consumes
+the staged file plus `handover.json` and never touches either MCP. That is the surface that makes the station hand-over-able.
+
+**The reading layer is NOT the analysis layer.** It exposes evidence with provenance; a grounded-science process consumes those doors and produces
+interpretation — candidates, claims, refutation conditions. One answers questions about records; the other proposes what the records might mean. Keeping
+those apart is what stops an interpretation from being mistaken for a record.
