@@ -1,7 +1,11 @@
-# SYMBIONT — a data-mining machine you can point at any source
+# SYMBIONT — a machine for running data stations
 
 > **Public subset.** A few cited paths are held back by policy; each one — what it is, why, what it would prove, how to request it — is in
 > [`docs/WITHHELD.md`](docs/WITHHELD.md).
+
+Two words, because both matter. A **station** is a governed pipeline you point at sources: it decides what it may fetch, fetches it, checks the numbers,
+stores what the licence allows, and hands over a corpus you can defend. This repository is the **machine** that runs such a station — and, because the
+guarantees are generic, more than one.
 
 SYMBIONT is a **machine for turning sources into a corpus you can defend**. It finds candidate sources, judges whether they can be used, writes the
 adapter, trials it in a sandbox, writes the evidence card, and admits it — then fetches, verifies, stores and hands over. Point it at anything that publishes
@@ -272,6 +276,24 @@ produced it, because each hop keeps both levels and copies the licences forward.
 (`REFUSED[provenance-cycle]`). Contract: [`docs/MANIFEST.md`](docs/MANIFEST.md) §4. Honest limit: a federated row can claim `verified: manifest` (the copy
 agrees with its manifest) and never `verified: upstream` (re-derived from the authority) — federation gives you the integrity of a copy, not the truth of a
 re-derivation.
+
+### How your own source gets added — three routes, all through the same gate
+
+A source is **two files at most**, never a hidden runtime change: an *entry* in `sources.yml` (the declaration: who it is, its URLs, licence, rate limit,
+budget, `enabled`) and, if it needs one, an *adapter* in `symbiont/adapters/` (four calls). Which of the three routes you take depends on what you are pointing at:
+
+```
+1 NO CODE AT ALL     the thing already speaks a shape we know:
+                       · another station's hand-over   → an entry; the generic manifest adapter reads it
+                       · an MCP server with a count    → an entry; the generic MCP adapter talks to it
+2 ONE SMALL FILE     the thing speaks its own shape:       an adapter with discover · fetch · normalise · verify, plus the entry
+3 LET IT DRAFT       you do not want to write the adapter:  probe → evaluate → draft writes the skeleton into the drafts bay, you review it,
+                                                            then sandbox → card → admit
+```
+
+What you should **not** do is reach into a running station and change what it may fetch from a script or a prompt: `sources.yml` is the declared intent, the
+adapter is code under review, and the diary records the decision. That is why admission is a separate act from fetching — and why "add a source" always means
+*write a file, then pass the gate*, never *reach in and flip something*.
 
 ### An MCP server can be a source
 
