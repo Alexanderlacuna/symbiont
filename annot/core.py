@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from datetime import datetime, timezone
 
 CORE = "annot"
@@ -159,6 +160,29 @@ SPECS = {
         "params": {"tool": ("string", False, "gene_dossier"),
                    "params": ("object", False, {}),
                    "sentences": ("array", True, None),
+                   "limit": ("integer", False, 50)},
+    },
+    "research_check": {
+        "purpose": ("THE OTHER QUESTION A READER ASKS: can this corpus answer this question — and if "
+                    "not, EXACTLY WHY, per dataset? Takes a research spec path, OR the arms/filters "
+                    "plus the required and optional datasets, and returns a coverage verdict whose "
+                    "reason for each dataset is one of five fixed words: present (with its "
+                    "release) · not-admitted · not-enabled · not-acquired · stale (present, but the "
+                    "release the store holds is behind the upstream one the last run observed). "
+                    "Plus the arms summary and the one verdict line OK | REFUSED[missing-dataset] "
+                    "naming what is missing. The verdict is symbiont.research.coverage()'s — the "
+                    "same function the loop's pre-flight gate and the manifest call — so the CLI and "
+                    "this door can never disagree about whether a spec is executable. It performs "
+                    "NO acquisition and modifies nothing: it reads the spec, sources.yml, "
+                    "state/<id>.json and runs/*.json, and makes zero requests."),
+        "params": {"spec": ("string", False, ""),
+                   "research_id": ("string", False, ""),
+                   "question": ("string", False, ""),
+                   "arms": ("object", False, {}),
+                   "filters": ("object", False, {}),
+                   "required": ("array", False, []),
+                   "optional": ("array", False, []),
+                   "sources_config": ("string", False, ""),
                    "limit": ("integer", False, 50)},
     },
 }
@@ -484,6 +508,55 @@ class Store:
                     by_ens.setdefault(r["ensembl_gene_id"], r)
             return {"symbol": by_symbol, "mgi": by_mgi, "ensembl": by_ens}
         return self._memo("idx", build)
+
+    # -- the literature arm (req-P2 ... evidence_level STAMPED, 2026-11-12) ------------------------
+    # The store's literature view is <store>/literature/view/gene_publication.v<N>.tsv. It is READ
+    # LAZILY and ABSENT-TOLERANT: a store without a literature arm is the normal case, and the door
+    # answers with a NAMED empty ("no publication source is in this store") rather than a blank.
+    # evidence_level is CARRIED THROUGH TO THE READER: an abstract-derived claim and a full-text one
+    # must never look the same in a door response.
+    @property
+    def literature_rows(self) -> list[dict]:
+        def load():
+            d = self.p("literature", "view")
+            if not os.path.isdir(d):
+                return []
+            best = None
+            for f in sorted(os.listdir(d)):
+                m = re.match(r"gene_publication\.v(\d+)\.tsv$", f)
+                if m and (best is None or int(m.group(1)) > best[0]):
+                    best = (int(m.group(1)), f)
+            if not best:
+                return []
+            self._literature_view = os.path.join(d, best[1])
+            rows = _read_tsv(self._literature_view)
+            return rows
+        return self._memo("lit", load)
+
+    @property
+    def literature_provenance(self) -> dict:
+        def load():
+            d = self.p("literature", "view")
+            if not os.path.isdir(d):
+                return {}
+            best = None
+            for f in sorted(os.listdir(d)):
+                m = re.match(r"gene_publication\.v(\d+)\.provenance\.json$", f)
+                if m and (best is None or int(m.group(1)) > best[0]):
+                    best = (int(m.group(1)), f)
+            return _read_json(os.path.join(d, best[1])) if best else {}
+        return self._memo("lit_prov", load)
+
+    def literature_index(self) -> dict:
+        def build():
+            by_gene: dict = {}
+            for r in self.literature_rows:
+                for key in ("mgi_id", "ensembl_gene_id"):
+                    v = (r.get(key) or "").strip()
+                    if v:
+                        by_gene.setdefault(v.upper(), []).append(r)
+            return by_gene
+        return self._memo("lit_idx", build)
 
     def resolve(self, gene: str) -> tuple[dict | None, str]:
         """A gene may be named by symbol (case-insensitive), MGI accession or Ensembl gene id."""
@@ -991,6 +1064,49 @@ def q_phenotype_evidence(st: Store, a: dict) -> dict:
 def q_publications_for(st: Store, a: dict) -> dict:
     unreachable = _unreachable_for("publications_for")
     row, matched_by = st.resolve(a["gene"])
+    # THE LITERATURE ARM, WHEN THE STORE HAS ONE. evidence_level · licence · abstract_stored travel
+    # with every item: a reader must be able to tell an abstract-derived claim from a full-text one,
+    # and a licence-bearing title from one we may not store.
+    if row is not None and st.literature_rows:
+        hits = []
+        for key in (row.get("mgi_id"), row.get("ensembl_gene_id")):
+            k = (key or "").strip().upper()
+            if k:
+                hits.extend(st.literature_index().get(k, []))
+        seen, uniq = set(), []
+        for h in hits:
+            if h.get("pmid") and h["pmid"] not in seen:
+                seen.add(h["pmid"]); uniq.append(h)
+        uniq.sort(key=lambda h: (h.get("year") or "", h.get("pmid") or ""), reverse=True)
+        # THE RECEIPT IS PART OF EVERY ITEM: the literature view's provenance names the release
+        # (source_release) and the run (run_id); the door stamps both, so an item is traceable to the
+        # bytes it came from without the reader knowing anything about the store layout.
+        rel = (st.literature_provenance or {}).get("source_release") or ""
+        run = (st.literature_provenance or {}).get("run_id") or ""
+        shown, meta = _clip([
+            dict(item("%s (%s, %s)" % (h.get("title") or "(title not stored)",
+                                       h.get("journal") or "?", h.get("year") or "?"),
+                      "PMID:%s" % h["pmid"], "pubmed", st, "gene_publication"),
+                 evidence_level=h.get("evidence_level") or "unknown",
+                 abstract_stored=(h.get("abstract_stored") or "no"),
+                 licence=h.get("licence") or "",
+                 year=h.get("year") or "", journal=h.get("journal") or "",
+                 **{"release": rel, "sha256": run})
+            for h in uniq], a.get("limit"))
+        return {
+            "annot": {"core": CORE, "core_version": CORE_VERSION, "tool": "publications_for"},
+            "status": "ok" if shown else "empty",
+            "reason": None if shown else "no_publication_for_gene",
+            "query": a,
+            "items": shown,
+            "counts": meta,
+            "subject": {"gene": a["gene"], "matched_symbol": row["symbol"], "matched_by": matched_by,
+                        "mgi_accession": row.get("mgi_id", "")},
+            "message": None if shown else (
+                "the literature arm is present (%d publication(s) in the store) but none of them names %s"
+                % (len(st.literature_rows), row["symbol"])),
+            "provenance": provenance(st, []),
+        }
     return {
         "annot": {"core": CORE, "core_version": CORE_VERSION, "tool": "publications_for"},
         "status": "empty",
@@ -1258,6 +1374,176 @@ def q_answer(st: Store, a: dict) -> dict:
     }
 
 
+# --------------------------------------------------------------------------------------------------
+# research_check — THE READING DOOR THAT SAYS WHY THE EVIDENCE IS NOT THERE
+# (req-P1-RESEARCH-CHECK-a-read-door-that-says)
+# --------------------------------------------------------------------------------------------------
+# The six read tools answer questions about the evidence the store HAS. This one answers a different
+# question — can the corpus satisfy THIS question? — and, when it cannot, says WHICH dataset is
+# absent and WHICH KIND of absent it is, because an empty phenotype section can mean five different
+# things: no biology · no dataset admitted · admitted but disabled · admitted but never fetched ·
+# fetched but stale. The reader sees one blank; the station knows five facts.
+#
+# THE ONE-DEFINITION RULE, stated here because it is a rule about DISAGREEMENT and not taste:
+#   the coverage verdict below is `symbiont.research.coverage()`'s, called with this store's own
+#   `state/` and `runs/`. This module composes NO coverage opinion of its own — it never inspects a
+#   dataset's presence itself, it prints what the loop's evaluator says. A second evaluator inside
+#   the MCP door is how the CLI and the MCP door start disagreeing about whether a spec is executable.
+#
+# WHAT IT REFUSES TO DO: acquire. `research_run` is out of scope precisely so the reading door can
+# never be the thing that fetches, and the two sentences below travel in every answer so a reader
+# does not have to take that on trust.
+RESEARCH_READ_ONLY_SENTENCES = ("acquisition performed: NO", "corpus modified: NO")
+
+
+def _research_modules():
+    """The registry parser and the coverage evaluator, imported LAZILY: this file imports only the
+    standard library at load time, which is what keeps the "the server cannot write, and this core
+    opens no socket" property true by construction rather than by inspection."""
+    try:
+        from symbiont import contract as scontract
+        from symbiont import research as sresearch
+    except ModuleNotFoundError:                 # a door started from outside the farm root
+        if FARM not in sys.path:
+            sys.path.insert(0, FARM)
+        from symbiont import contract as scontract
+        from symbiont import research as sresearch
+    return scontract, sresearch
+
+
+def _research_unavailable(why: str) -> dict:
+    """The named refusal for a door that cannot reach the research layer: it says so, and it says
+    that nothing was read and nothing was written — instead of a traceback or a quiet blank."""
+    return {
+        "annot": {"core": CORE, "core_version": CORE_VERSION, "tool": "research_check"},
+        "status": "refused",
+        "reason": "research-unavailable",
+        "items": [],
+        "message": ("REFUSED[research-unavailable]: the coverage evaluator could not be imported (%s). "
+                    "The verge a check would have to invent is a second evaluator, so this door "
+                    "invents nothing: NOTHING was read from the corpus, acquisition performed: NO, "
+                    "corpus modified: NO" % why),
+        "provenance": {"core": CORE, "core_version": CORE_VERSION, "read_only": True,
+                       "read": False, "sources": {}, "unreachable": [], "rules": {}},
+    }
+
+
+def q_research_check(st: Store, a: dict) -> dict:
+    """Can this corpus answer this question, and if not, exactly why PER DATASET?
+
+    Two ways in, one verdict: a SPEC PATH (the artefact a researcher writes, validated by the SAME
+    schema the loop reads) or the arms/filters + required/optional datasets (validated by that same
+    schema, through research.spec_from_requirements, with every default it applies named back in
+    `research.defaults_applied`).
+    """
+    try:
+        scontract, sresearch = _research_modules()
+    except Exception as exc:                    # no research layer: named, not a traceback
+        return _research_unavailable("%s: %s" % (type(exc).__name__, exc))
+    try:
+        sources_path = a.get("sources_config") or ""
+        if not sources_path:
+            beside = os.path.join(st.path, "sources.yml")   # the config the last run persisted
+            sources_path = beside if os.path.isfile(beside) else scontract.DEFAULT_SOURCES
+        sources = scontract.load_sources(sources_path)       # refuses BY NAME (ConfigError)
+
+        defaults: list[str] = []
+        spec_path = a.get("spec") or ""
+        if spec_path:
+            spec = sresearch.load_spec(spec_path)            # THE schema, not a copy of it
+        else:
+            spec, defaults = sresearch.spec_from_requirements(
+                research_id=a.get("research_id") or "",
+                question=a.get("question") or "",
+                arms=a.get("arms") or {},
+                filters=a.get("filters") or {},
+                required=a.get("required") or [],
+                optional=a.get("optional") or [])
+
+        # ── THE VERDICT IS NOT THIS MODULE'S TO MAKE ────────────────────────────────────────
+        # One call, the loop's own evaluator, this store's own state/ and runs/. If a reader ever
+        # wants to know why the MCP door and the CLI agree, the answer is this line.
+        cov = sresearch.coverage(spec, sources, store=st.path, spec_path=spec_path)
+    except scontract.ConfigError as exc:
+        return {
+            "annot": {"core": CORE, "core_version": CORE_VERSION, "tool": "research_check"},
+            "status": "error",
+            "reason": "bad_spec",
+            "refusal": {"class": getattr(exc, "code", "config"), "detail": str(exc)},
+            "query": a,
+            "items": [],
+            "message": ("REFUSED[%s]: %s — the check refuses rather than guess what was meant. "
+                        "acquisition performed: NO · corpus modified: NO"
+                        % (getattr(exc, "code", "config"), exc)),
+            "provenance": provenance(st),
+        }
+
+    sel = cov["selection"]
+    arm_rows = {}
+    for arm, value in (sel.get("arms") or {}).items():
+        arm_rows[arm] = {
+            "declared": value is not None,
+            "value": value,
+            "term_sets": list((sel.get("filters") or {}).get("term_sets", {}).get(arm) or []),
+        }
+    arms_summary = ("arms: " + " · ".join(
+        "%s: %s" % (arm, ("declared" if r["declared"] else "null (not part of this investigation)"))
+        for arm, r in arm_rows.items()))
+    counted = {}
+    for row in cov["datasets"]:
+        counted[row["status"]] = counted.get(row["status"], 0) + 1
+    counts_line = "datasets: " + " · ".join("%s=%d" % (k, v) for k, v in sorted(
+        counted.items(), key=lambda kv: str(kv[0])))
+
+    message = ("%s — %s (%s). %s · %s" % (cov["verdict"], counts_line, arms_summary,
+                                           RESEARCH_READ_ONLY_SENTENCES[0],
+                                           RESEARCH_READ_ONLY_SENTENCES[1]))
+    return {
+        "annot": {"core": CORE, "core_version": CORE_VERSION, "tool": "research_check"},
+        "status": "ok" if cov["verdict_ok"] else "refused",
+        "reason": "" if cov["verdict_ok"] else "missing-dataset",
+        "query": a,
+        # THE VERDICT LINE, verbatim from the evaluator: OK | REFUSED[missing-dataset] naming what
+        # is missing and WHICH KIND of missing it is.
+        "verdict": cov["verdict"],
+        "verdict_ok": cov["verdict_ok"],
+        "research": {
+            "research_id": cov["research_id"],
+            "spec_sha256": cov["spec_sha256"],
+            "spec_path": cov["spec_path"] or "(inline requirement set — no spec file was named)",
+            "defaults_applied": list(defaults),
+            "sources_config": os.path.abspath(sources_path),
+        },
+        "arms": arm_rows,
+        "arms_summary": arms_summary,
+        "filters": sel.get("filters"),
+        # ONE ROW PER DECLARED DATASET: which one, whether it was required, and WHY it is there or
+        # not in one of the five fixed words, with the file that says so.
+        "datasets": cov["datasets"],
+        "dataset_status": cov["dataset_status"],
+        "status_vocabulary": cov["status_vocabulary"],
+        "presence_evaluated": cov["presence_evaluated"],
+        # the loop's own block, decisive fields only, so the door cannot state coverage differently
+        # from the run record and the manifest
+        "coverage": {k: cov[k] for k in ("status", "complete", "missing", "missing_by_class",
+                                         "missing_detail", "required", "optional", "available")},
+        "evaluator": {
+            "function": "symbiont.research.coverage",
+            "one_definition": ("the SAME function the loop's pre-flight gate and the manifest call; "
+                               "this door composes no verdict of its own, because two evaluators "
+                               "would let the CLI and the MCP door disagree about whether a spec "
+                               "is executable"),
+            "presence_read_from": [os.path.join(st.path, "state"), os.path.join(st.path, "runs")],
+            "requests_made": 0,
+            "writes_made": 0,
+        },
+        "sentences": list(RESEARCH_READ_ONLY_SENTENCES),
+        "items": [],
+        "message": message,
+        "provenance": provenance(st),
+    }
+
+
 QUERIES = {
     "gene_dossier": q_gene_dossier,
     "gene_xref": q_gene_xref,
@@ -1266,6 +1552,7 @@ QUERIES = {
     "traits_containing": q_traits_containing,
     "what_changed": q_what_changed,
     "answer": q_answer,
+    "research_check": q_research_check,
 }
 
 

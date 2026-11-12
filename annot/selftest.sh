@@ -72,7 +72,7 @@ HITS=$(grep -nE "jsonrpc|tools/call" annot/mcp_server.py | grep -cE "write|creat
 [ "$HITS" = "0" ] && ok "mcp_server.py has no write/create/update/upload/delete tool path" \
   || no "mcp_server.py names a write operation ($HITS line(s))"
 
-echo "== B · ONE DEFINITION: CLI bytes == MCP bytes, for all seven tools (six read + opt-in answer) =="
+echo "== B · ONE DEFINITION: CLI bytes == MCP bytes, for all eight tools (six read + opt-in answer + research_check) =="
 CLI_JSON="$T/mcp-requests.jsonl"
 python3 - "$CLI_JSON" <<'PY'
 import json, sys
@@ -85,6 +85,9 @@ calls = [
     ("what_changed",      {"source": "mgi", "since": "2026-11-09T20:00:00Z"}),
     ("answer",            {"tool": "gene_dossier", "params": {"gene": "Trp53"},
                            "sentences": ["Trp53 is the mouse gene with MGI accession MGI:98834."]}),
+    # (req-P1-RESEARCH-CHECK-a-read-door-that-says): the coverage door is a tool like the rest —
+    # it must answer the same BYTES at the CLI and at the MCP door, so it is pinned here too.
+    ("research_check",    {"spec": "symbiont/research/mouse-gene-identity.yml"}),
 ]
 with open(sys.argv[1], "w") as fh:
     fh.write(json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize",
@@ -111,10 +114,10 @@ for i, (tool, args) in enumerate(calls, 1):
     text = by_id[i]["result"]["content"][0]["text"]
     open("%s/mcp-%d.json" % (tmp, i), "w").write(text)
     open("%s/args-%d.json" % (tmp, i), "w").write(json.dumps(args))
-print("  PASS mcp session: initialize ok, tools/list = the tools in SPECS order, 7 calls answered")
+print("  PASS mcp session: initialize ok, tools/list = the tools in SPECS order, 8 calls answered")
 PY
 i=0
-while [ $i -lt 7 ]; do
+while [ $i -lt 8 ]; do
   i=$((i+1))
   TOOL=$(python3 -c "import json;print(json.load(open('$T/mcp-requests.jsonl.calls'))[$((i-1))][0])")
   ARGS=$(python3 -c "import json;a=json.load(open('$T/args-$i.json'));print(' '.join('--%s %s'%(k,repr(str(v)) if ' ' in str(v) else v) for k,v in a.items()))")
@@ -127,7 +130,7 @@ while [ $i -lt 7 ]; do
   fi
 done
 
-echo "== C · EVERY ITEM CARRIES AN ACCESSION (all seven responses) =="
+echo "== C · EVERY ITEM CARRIES AN ACCESSION (all eight responses) =="
 python3 - "$T" <<'PY'
 import json, sys, glob
 tmp = sys.argv[1]
@@ -147,7 +150,7 @@ def walk(o, path):
             walk(v, "%s[%d]" % (path, i))
 for f in sorted(glob.glob(tmp + "/cli-*.json")):
     walk(json.load(open(f)), f.split("/")[-1])
-print("  %s %d item(s) across seven responses, every one with value+accession+source+release+fetched_at+sha256"
+print("  %s %d item(s) across eight responses, every one with value+accession+source+release+fetched_at+sha256"
       % ("PASS" if not bad else "FAIL", items))
 sys.exit(1 if bad else 0)
 PY

@@ -60,6 +60,9 @@ def corrupt(cols: list[str], how: str, reskey: str) -> list[str]:
 
 
 def loop_run(store: str, run_id: str, extra: list[str]):
+    from . import contract
+    from .selftest_sources import seed
+    seed(store, contract.DEFAULT_SOURCES)   # the fixture admits what the shipped config enables
     return subprocess.run([sys.executable, "-m", "symbiont.loop", "--store", store,
                            "--run-id", run_id, "--since", "auto"] + extra,
                           capture_output=True, text=True, cwd=FARM)

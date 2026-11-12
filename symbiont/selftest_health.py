@@ -30,7 +30,7 @@ import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 from . import contract
-from .selftest_sources import write_config
+from .selftest_sources import seed, write_config
 from .selftest_arc import build_tree, start_server, base_sources as arc_base_sources
 
 FARM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -89,6 +89,7 @@ def main(argv=None) -> int:
         srv0, host = start_server(web)
         st0 = os.path.join(tmp, "healthy.store")
         cfg0 = write_config(os.path.join(tmp, "healthy.yml"), arc_base_sources(host))
+        seed(st0, cfg0)                 # the fixture admits what it enabled
         p0 = subprocess.run([sys.executable, "-m", "symbiont.loop", "--store", st0,
                              "--sources-config", cfg0, "--run-id", "health-f0"],
                             capture_output=True, text=True, cwd=FARM)

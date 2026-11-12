@@ -106,7 +106,7 @@ def main() -> int:
     say(f"local provider: {host}  (fixture tree {os.path.join(WORK, 'www')})")
 
     # the two live sources: ensembl_biomart OK, mgi DELIBERATELY BROKEN (dead endpoint -> 404)
-    from symbiont.selftest_sources import base_sources, write_config
+    from symbiont.selftest_sources import base_sources, seed, write_config
     health_cfg = base_sources(host)
     health_cfg["mgi"]["base_url"] = f"{host}/gone/"          # the break: nothing is served there
     health_cfg["mgi"]["endpoints"] = {"metadata": "MRK_ENSEMBL.rpt",
@@ -124,6 +124,7 @@ def main() -> int:
                     header + contract.dump_sources(adm))
 
     store = os.path.join(WORK, "store")
+    seed(store, cfg_health)                 # the demo admits the two sources it enables
     common = ["--admission-dir", admission_dir, "--sources-config", cfg_adm,
               "--store", store, "--adapters-dir", os.path.join(WORK, "adapters")]
 

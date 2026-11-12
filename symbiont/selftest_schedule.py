@@ -68,6 +68,11 @@ class Sandbox:
         txt = re.sub(r"base_url: \S+", f"base_url: {CLOSED}", txt)
         self.sources = os.path.join(self.farm, "symbiont", "sources.yml")
         open(self.sources, "w", encoding="utf-8").write(txt)
+        # the fixture's store admits what that sources.yml enables (req-P1-THE-DIARY): the door
+        # refuses an enabled source with no `admitted` event, and this sandbox is a fake station
+        # whose sources were, in the fiction of the test, admitted
+        from .selftest_sources import seed
+        seed(self.store, self.sources)
 
     def env(self, **over):
         e = dict(os.environ)

@@ -60,7 +60,7 @@ import threading
 import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-from . import contract
+from . import contract, events
 
 FARM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REAL_CONFIG = contract.DEFAULT_SOURCES
@@ -167,7 +167,36 @@ def write_config(path: str, sources: dict) -> str:
     return path
 
 
+def seed(store: str, cfg: str) -> list[str]:
+    """THE FIXTURE'S ADMISSION (req-P1-THE-DIARY-appended-by-the-code-nev).
+
+    The door now refuses a source that sources.yml enables but the diary never admitted
+    (REFUSED[not-admitted]). A fixture that writes a source into its own sources.yml has, in the
+    fiction of the test, admitted it — so it records that with the SAME writer the station uses,
+    `origin: backfill`, and the event says which fixture wrote it. This is not a bypass: a fixture
+    that wants to test the door simply does not call this.
+    """
+    out = []
+    try:
+        sources = contract.load_sources(cfg)
+    except Exception:
+        return out
+    for sid, entry in sorted(sources.items()):
+        if not entry.get("enabled"):
+            continue
+        ev = events.seed_admitted(
+            store, entry,
+            why=(f"the fixture wrote {sid} into its own sources.yml as enabled: true — a store "
+                 f"built by the station's own suite is, in the fiction of the test, an admitted "
+                 f"source"),
+            evidence=dict(fixture="symbiont suite", sources_config=os.path.abspath(cfg)))
+        if ev:
+            out.append(f"{sid} (seq {ev['seq']})")
+    return out
+
+
 def loop(store: str, cfg: str, *extra: str):
+    seed(store, cfg)                      # the fixture admits what it enabled (see seed())
     return subprocess.run([sys.executable, "-m", "symbiont.loop", "--store", store,
                            "--sources-config", cfg, *extra],
                           capture_output=True, text=True, cwd=FARM)

@@ -74,7 +74,7 @@ import subprocess
 import sys
 
 from .http import Fetcher, FetchError, HttpStatus
-from . import admission_policy, contract
+from . import admission_policy, contract, events
 
 FARM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_CYCLE = os.path.join(FARM, "symbiont", "cycle.yml")
@@ -320,6 +320,28 @@ class Run:
                     bytes=b["bytes"] - self.fetcher.bytes_in,
                     wall_s=round(b["wall_s"] - self.fetcher.wall_seconds, 1))
 
+    # -- the diary (req-P1-THE-DIARY-appended-by-the-code-nev) ------------------------------
+    def diary(self, cand: dict, event_class: str, why: str, evidence: dict | None = None) -> dict | None:
+        """THE EMISSION HOOK — one line per transition, written where the transition happens.
+
+        A CANDIDATE has no dataset identity yet (sources.yml gains it only when the card registers
+        it), so the diary key is the candidate id and the event SAYS so in its evidence: a weaker
+        key that announces itself, never a stronger one that is invented. If the diary refuses the
+        line (illegal transition, damaged tail) the refusal is named in the run's own ledger — the
+        cycle never pretends a transition was recorded when it was not."""
+        sid = str(cand.get("id") or "?")
+        ev = dict(evidence or {})
+        ev.setdefault("candidate", sid)
+        ev.setdefault("full_name", cand.get("full_name", ""))
+        ev.setdefault("run_id", self.run_id)
+        ev.setdefault("source_id_source", "candidate-id: no dataset identity before sources.yml")
+        try:
+            return events.append(self.store, event_class, source_id=sid, why=why, actor="machine",
+                                 evidence=ev)
+        except events.DiaryRefused as e:
+            self.note_refusal(e.code, f"{sid}: the diary refused the '{event_class}' event: {e}")
+            return None
+
     # -- the previous run (A6: the next cycle says how much it did) ----------------------------
     def _read_last_run(self) -> None:
         p = os.path.join(self.state_dir, "last.json")
@@ -506,18 +528,25 @@ def _api_candidate(run: Run, surface: dict, item: dict) -> dict:
     return cand
 
 
+def _refuse_candidate(run: "Run", cand: dict, code: str, detail: str) -> bool:
+    """EVALUATE's refusal, recorded TWICE on purpose: in the run's own ledger (the report reads it)
+    and as a `refused` line in the diary with its refusal class in the evidence — the answer to
+    "why was this source refused" is a line, not a reconstruction (req-P1-THE-DIARY)."""
+    run.note_refusal(code, detail)
+    run.diary(cand, "refused", detail, dict(refusal_code=code))
+    return False
+
+
 def _evaluate(run: Run, surface: dict, cand: dict) -> bool:
     """3 · EVALUATE — the rules, each named. Returns True when the candidate survives."""
     lic = (cand.get("licence") or "").strip()
     if not lic or lic.upper() in ("NOASSERTION", "NONE"):
-        run.note_refusal("licence-unreadable",
+        return _refuse_candidate(run, cand, "licence-unreadable",
                          f"{cand['full_name'] or cand['id']}: the API publishes no readable licence "
                          f"({lic or 'null'}) — terms unread = no data (POLICY-THIRD-PARTY §1)")
-        return False
     if cand.get("archived"):
-        run.note_refusal("archived",
+        return _refuse_candidate(run, cand, "archived",
                          f"{cand['full_name']}: archived upstream — a dependency we could not pin")
-        return False
     pushed = cand.get("pushed_at") or ""
     if pushed:
         try:
@@ -527,10 +556,9 @@ def _evaluate(run: Run, surface: dict, cand: dict) -> bool:
             age = -1
         dead = int(surface.get("dead_days") or 730)
         if age > dead:
-            run.note_refusal("dead-repo",
+            return _refuse_candidate(run, cand, "dead-repo",
                              f"{cand['full_name']}: no push for {age} day(s) (the surface's own "
                              f"dead_days={dead}) — a dependency that cannot be pinned is a risk")
-            return False
     # RATE LIMIT FITS THIS RUN'S BUDGET (DESIGN §3 step 3): a source whose own politeness makes
     # even ONE read cost more wall clock than this run has left is refused NOW, with the
     # arithmetic, not discovered halfway through a sandbox run. The candidate's declared limit is
@@ -542,20 +570,18 @@ def _evaluate(run: Run, surface: dict, cand: dict) -> bool:
     wall_needed = (60.0 / rpm) if rpm else gap
     left = max(0.0, run.budget_left["wall_s"])
     if wall_needed > left:
-        run.note_refusal("rate-too-low",
+        return _refuse_candidate(run, cand, "rate-too-low",
                          f"{cand['full_name'] or cand['id']}: at {rpm:g} request(s)/minute"
                          f"{f' with {gap:g}s between them' if gap else ''} one read needs "
                          f"~{wall_needed:.1f}s of wall clock and this run has {left:.1f}s left "
                          f"(budget wall_s={run.cfg['budget']['wall_s']}) — the cycle will not "
                          f"start a source it cannot read politely inside its own budget")
-        return False
     if not cand.get("count_endpoint"):
-        run.note_refusal("no-count-endpoint",
+        return _refuse_candidate(run, cand, "no-count-endpoint",
                          f"{cand['full_name'] or cand['id']}: a search result is a repository, not a "
                          f"countable data endpoint — the count that admits a source is the source's "
                          f"OWN row count and this surface publishes none, so the cycle may only "
                          f"propose it (list it in a structured registry with its count_endpoint)")
-        return False
     return True
 
 
@@ -777,6 +803,11 @@ def step_discover(run: Run, surfaces: list[dict]) -> None:
                                        pushed_at="", surface=surface["id"]))
                 if seen_out and key not in seen:
                     seen_out.write(json.dumps(dict(key=key, at=_utc())) + "\n")
+                    run.diary(dict(id=c["id"], full_name=c["id"]), "discovered",
+                              f"surface {surface['id']} listed candidate {c['id']} at {c['url']} "
+                              f"(run {run.run_id})",
+                              dict(surface=surface["id"], url=c.get("url", ""),
+                                   count_endpoint=c.get("count_endpoint", "")))
             continue
 
         # github_search: every listed query is read, and LOGGED with its own count
@@ -808,6 +839,10 @@ def step_discover(run: Run, surfaces: list[dict]) -> None:
                 candidates.append(cand)
                 if seen_out:
                     seen_out.write(json.dumps(dict(key=cand["key"], at=_utc())) + "\n")
+                run.diary(cand, "discovered",
+                          f"query {q!r} on surface {surface['id']} returned {cand['full_name']} "
+                          f"(run {run.run_id})",
+                          dict(surface=surface["id"], query=q, url=cand.get("url", "")))
             run.queries.append(dict(surface=surface["id"], query=q, url=url, count=total, new=new,
                                     error=""))
             run.say(f"QUERY     {surface['id']} {q!r} -> {total} result(s), {new} new")
@@ -824,6 +859,12 @@ def step_discover(run: Run, surfaces: list[dict]) -> None:
                                                    "surface", "count_endpoint")})
         if not _evaluate(run, _surface_of(surfaces, cand["surface"]), cand):
             continue
+        run.diary(cand, "evaluated",
+                  f"licence {cand.get('licence') or '(unreadable)'} read, count endpoint "
+                  f"{cand.get('count_endpoint')}, rate limit fits the run's budget, neither "
+                  f"archived nor dead — the candidate survives EVALUATE (run {run.run_id})",
+                  dict(licence=cand.get("licence"), count_endpoint=cand.get("count_endpoint"),
+                       rate_limit=cand.get("rate_limit") or {}, surface=cand.get("surface")))
         _step_pipeline(run, cand)
     run.steps_done.append(f"pipeline({len(run.drafted)} drafted, {len(run.sandboxed)} sandboxed, "
                           f"{len(run.carded)} carded, {len(run.admitted)} admitted, "

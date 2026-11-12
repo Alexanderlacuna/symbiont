@@ -29,6 +29,10 @@ source-unreachable | count-mismatch) or the claim could not be joined · 8 all r
     symbiont retention [retention …]  the N-releases rule: freeze release bundles, sweep raw with
                                       archive-or-refuse (a drop is ARCHIVED with the hash kept or
                                       REFUSED by name — never silently removed)
+    symbiont registry [registry …]    THE DIARY's human door (symbiont/events.py holds the only
+                                      append): add-event · allow/deny (the switch, with
+                                      intent_changed) · manual-add · override · verify · head.
+                                      The closed transition table applies to a human's word too.
 """
 from __future__ import annotations
 
@@ -50,6 +54,8 @@ COMMANDS = {
                  "resolve"),
     "retention": ("the N-releases rule: freeze release bundles, sweep raw (archive or refuse)",
                   "retention"),
+    "registry": ("the diary's human door: add-event · allow · deny · manual-add · override · "
+                 "verify · head (the ONE writer for humans)", "registry"),
 }
 
 

@@ -133,3 +133,41 @@ ends up switched off.
 - **The gatekeeper proxy with no other route** (the row's alternative to the netns) is not built.
   It is what closes the DNS hole and gives per-tenant egress; it is the recommended next row.
 - **A bare namespace has no internet.** Stated in §1; it is a limitation, not a design goal.
+
+## THE ALLOWLIST IS DECLARED ENDPOINTS — AND REDIRECTS ARE PINNED AT ADMISSION
+(Learned by a real end-to-end run, 2026-11-12. Two refusals in one source.)
+
+```
+WHAT HAPPENED   base_url was github.com; the data 302'd to release-assets.githubusercontent.com; the licence page was on raw.githubusercontent.com.
+                The sandbox armed github.com alone, so it could neither fetch the data nor read the terms of the artifact it was told to evaluate —
+                REFUSED[licence-unknown], host not in the allowlist. A licence gate that cannot read the licence is an unreachable gate, not a safety
+                property.
+THE RULE        the allowlist is built ONLY from DECLARED, validated endpoints — data base_url · licence_url · metadata_url — one host per declaration,
+                never a wildcard, never a host discovered by execution.
+REDIRECTS       resolved ONCE at admission and PINNED, like DNS: follow the chain, record the final host(s), and REFUSED[redirect-undeclared] when a 302
+                points at a host the entry did not declare (naming both hosts). A redirect followed at run time is a hole; a redirect pinned at admission
+                is a declaration the operator can see.
+VISIBILITY      the sandbox banner prints every pinned host WITH ITS REASON — `base_url (declared data)` · `release-assets.githubusercontent.com
+                (302 from the release asset)` · `raw.githubusercontent.com (declared licence page)` — and the run record carries the pinned list per fetch.
+THE PRINCIPLE   the sandbox must be able to reach the evidence required to evaluate a source, WITHOUT widening beyond what the entry declared.
+```
+
+**BUILT TODAY (req-P1-THE-LICENCE-HOST-IS-IN-THE-ALLOWL).** The first half of that rule is now in
+code, in ONE definition site — `symbiont/sandbox.py::allowlist_declarations()` — and it is the
+entry's declarations, one host per declaration, never a wildcard: `base_url` (data) plus
+`licence_url` (licence page) whenever that URL names a **different** host, collapsed back to
+exactly ONE entry when both name the same host. `symbiont/admission.py` prints it as
+`allowlist: github.com (data) · raw.githubusercontent.com (licence page)`, carries it into the run
+record (`allowlist`, `licence_host`, `network_allowlist`), and records the licence fetch as its own
+request named `licence` with its own sha256 — so a reader can see *why* the second door was opened
+and *what* was read through it (measured 2026-11-12: `n=1 note='licence'
+url=https://raw.githubusercontent.com/monarch-initiative/mondo/master/LICENSE status=200
+bytes=18658`). The second half — pinning a 302 chain at admission — is **not** built: a licence page
+that is *served* from a host the entry does not declare (a CDN in front of it, an alias, or the 302
+above) is refused by name, `REFUSED[licence-host-undeclared]`, naming that host and the
+declarations it broke, so the operator's next act is to declare the host (or point `licence_url` at
+it) instead of reading a `licence-unknown` mystery; the terms are never followed onto a host nobody
+named. The kernel TIER keeps its narrower claim for the same reason: `base-url` is generated from
+the DATA host (a tier confines the payload's egress to the host the data comes from), while the
+licence host is a declaration of the *sandbox allowlist* — the artifact the banner and the run
+record name, and the one under which the licence read actually happens.
