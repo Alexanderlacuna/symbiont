@@ -9,7 +9,7 @@ guarantees are generic, more than one.
 
 SYMBIONT is a **machine for turning sources into a corpus you can defend**. It finds candidate sources, judges whether they can be used, writes the
 adapter, trials it in a sandbox, writes the evidence card, and admits it — then fetches, verifies, stores and hands over. Point it at anything that publishes
-rows and states a count of its own; **the biological corpus in this repo is one example, not the product.**
+rows and states a count of its own. The biological corpus in this repo is one worked example.
 
 ## What the machine does
 
@@ -144,7 +144,7 @@ REJECTED  a ROW that did not survive normalisation (712 rows with no symbol) —
 REFUTED   a CLAIM that contradicts the evidence — the ANALYSIS layer's word; the station never refutes biology, it only declines to assert what it cannot bind
 ```
 
-## The architecture is the product
+## The invariants
 
 Everything else is one deployment of it. Five invariants hold for every source and every domain:
 
