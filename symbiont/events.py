@@ -24,18 +24,19 @@ from __future__ import annotations
 # re-exported so every existing caller keeps its import (`from . import events`) and there is
 # exactly ONE definition of each: the file layer is diary.py and nowhere else.
 from .diary import (ACTORS, CLASSES, DIARY_NAME, EVENT_FIELDS, FIELDS, GENESIS, INTENT_CLASSES,
-                    ORIGINS, PERMITTING, REVOKING, TRANSITIONS, DiaryRefused, DiaryUnreadable,
-                    IllegalTransition, Read, TruncatedDiary, append, append_event, diary_path,
-                    head_matches, head_of, line_bytes, read, report, sha, transitions_from,
-                    verify)
+                    ORIGINS, PERMITTING, REVOKING, SEED_NAME, SEED_WHY, TRANSITIONS, DiaryRefused,
+                    DiaryUnreadable, IllegalTransition, Read, SeedRefused, TruncatedDiary, append,
+                    append_event, bootstrap_from_seed, diary_path, head_matches, head_of, line_bytes,
+                    read, read_seed, report, seed_path, sha, transitions_from, verify)
 from . import contract
 
 __all__ = [
     "ACTORS", "CLASSES", "DIARY_NAME", "EVENT_FIELDS", "FIELDS", "GENESIS", "INTENT_CLASSES",
-    "ORIGINS", "PERMITTING", "REVOKING", "TRANSITIONS", "DiaryRefused", "DiaryUnreadable",
-    "IllegalTransition", "Read", "TruncatedDiary", "append", "append_event", "diary_path",
-    "head_matches", "head_of", "line_bytes", "read", "report", "sha", "transitions_from",
-    "verify", "permission", "dataset_of", "emit", "seed_admitted",
+    "ORIGINS", "PERMITTING", "REVOKING", "SEED_NAME", "SEED_WHY", "TRANSITIONS", "DiaryRefused",
+    "DiaryUnreadable", "IllegalTransition", "Read", "SeedRefused", "TruncatedDiary", "append",
+    "append_event", "bootstrap_from_seed", "diary_path", "head_matches", "head_of", "line_bytes",
+    "read", "read_seed", "report", "seed_path", "sha", "transitions_from", "verify",
+    "permission", "dataset_of", "emit", "seed_admitted",
 ]
 
 
