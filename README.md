@@ -304,6 +304,16 @@ ships one pinned example: `@cyanheads/pubmed-mcp-server` 2.12.0, consumed over s
 tool that cannot say how many records it has is a tool, not a source* — `REFUSED[no-count-endpoint]`. That single rule is why a repository is refused as a
 source and an MCP that answers "0 of 399" is accepted.
 
+### Who is the consumer?
+
+Usually **not a station**. A consumer is a role: a client of somebody's *read* door (an assistant, a course, a reproduction script — no install, no store);
+or a loader that reads a *manifest* and needs no door at all (GeneNetwork's MCP, a bucket loader, `sha256sum`). Only when it also admits and fetches its own
+sources does a consumer become a station — and then it has both doors, like any other. **The machine door is never a consumer's door:** consuming is reading,
+and the machine door is for changing what a station may hold.
+
+A worked biological chain — mouse gene identity → phenotype/ortholog/disease joins → an aging question, with the real counts and the honest status of each
+part — is in [`docs/COMPOSITION-EXAMPLE.md`](docs/COMPOSITION-EXAMPLE.md).
+
 ## It keeps what the licence allows — in files, not in a database
 
 Downloading is not the same as storing. The station stores a source's data **only if the terms allow it**, and it records which terms it read:
