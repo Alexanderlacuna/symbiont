@@ -271,6 +271,8 @@ station can point at **another station's hand-over** — and keep pointing, stat
         └─────────────────────────────────────────────────────┴─────────────────────────────────────────────────────┘
 ```
 
+**Status: by contract, not yet in code.** The composition above is what [`docs/MANIFEST.md`](docs/MANIFEST.md) §4 *requires*, and the hand-over it describes is real (staged file, counts, per-row provenance, hashes). What is not built is the federated **ingestion** path — the adapter that reads another station's manifest (`manifest_source`) is filed and pending — so today a hand-over is consumed by a script, a loader, or a person, not yet by another station automatically.
+
 **Connections are not transitive; provenance is.** C never talks to A, but every row C holds can name the manifest it came through *and* the authority that
 produced it, because each hop keeps both levels and copies the licences forward. A chain that loops back to a dataset you already publish is refused
 (`REFUSED[provenance-cycle]`). Contract: [`docs/MANIFEST.md`](docs/MANIFEST.md) §4. Honest limit: a federated row can claim `verified: manifest` (the copy
