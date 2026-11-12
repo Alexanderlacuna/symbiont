@@ -49,6 +49,57 @@ So the corpus can grow without a human reading every candidate — and it cannot
 propose. That is the part worth pointing at: **a station that expands its own inputs while staying auditable**, with every refusal kept as evidence
 (we have 61 refused repositories, 3 refused data portals and their reasons on file).
 
+### Keeping it current — the schedule
+
+Nothing here depends on you remembering to run it. Six small jobs, one wrapper (`symbiont/station-job.sh`), each with a heartbeat so a missed run is visible:
+
+```
+weekly (Tue)     fetch  ensembl_biomart        re-fetch one enabled source, verify its count, publish or refuse
+weekly (Tue)     fetch  mgi
+daily            digest                        re-measure the store: releases, gaps, staleness, counts
+hourly           health                        per-source state: ok · degraded · down · quarantined
+daily            manifest                      refresh the hand-over artefact
+weekly (Sat)     discovery                     the outward light (only does anything when cycle.yml says enabled: true)
+```
+
+`cycle.yml` owns the cadence, the surface registry, the budget and the admission default — so "check for updates" and "go looking for new sources" are the
+same interface, one switch apart. A run that finds nothing says so in words: *"I looked: 1 surface · 7 queries · 0 new"*.
+
+### Plugging it in — what orchestration means here
+
+The machine is driven by files, not by a daemon, so anything that can write a file can orchestrate it: a cron line, a CI job, an agent, another station.
+
+```
+surfaces registry   WHERE it may look            (a text file you own; no registry ⇒ REFUSED[no-surfaces])
+research spec       WHAT a question requires     (arms · filters · required/optional datasets; hashed into the run record)
+cycle.yml           HOW FAR it may go            (mode · cadence · budget · admit default)
+sources.yml         WHAT it may fetch            (per-source licence, rate limit, budget, enabled)
+```
+
+A *research spec* is the interesting one: it is an executable contract — run it and the station either proves coverage or refuses with `REFUSED[missing-dataset]`
+before spending a request. Owner-governed orchestration (a route with checkpoints that inherits, and can only narrow, the station's policy) is designed and
+**not built**: [`docs/DESIGN.md`](docs/DESIGN.md) §11.
+
+### Owner-defined orchestration — designed, not built
+
+Discovery can already be pointed, budgeted and switched off. What is **designed** is for an owner to define a whole *route* — an expedition — and the policy
+it runs under, with the station's own authority as the ceiling:
+
+```
+an expedition   a route of checkpoints (look here → probe these → sandbox the ones that pass → stop)
+owner policy    three ORTHOGONAL grants, never one "autonomy level":   WRITE (none · propose · acquire · publish)
+                                                                       SPEND (requests · bytes · wall · per-host)
+                                                                       ATTENTION (which transitions need a human — admit by default)
+inheritance     effective = meet(station, expedition):  permissions intersected · prohibitions unioned · budgets minimised · approvals unioned
+                ⇒ a route may narrow what it is allowed to do, and can never widen it
+refusals        every one names its layer:  REFUSED[admission-denied by=station] · REFUSED[expedition-prohibits op=admit] · REFUSED[budget by=…]
+accounting      the effective budget flows into the ONE place that charges a request, so a budget is enforced, not respected
+provenance      the expedition is a third actor in the log (actor: expedition:<name>) and the route's sha is pinned in the run record and the manifest
+```
+
+Status: proposal only — [`docs/DESIGN.md`](docs/DESIGN.md) §11 carries the note marked **PROPOSED, NOT BUILT**, and two p2 rows hold the work
+(`GRANTS-AND-INHERITANCE`, `THE-EXPEDITION-IS-A-THIRD-ACTOR`). The principle it protects: **an expedition may organise authority; it cannot manufacture it.**
+
 ## The architecture is the product
 
 Everything else is one deployment of it. Five invariants hold for every source and every domain:
@@ -120,10 +171,32 @@ in the file it shipped. A repository with no count stays a *tool*, and is refuse
 
 ## It composes — one station can be another station's source
 
-A hand-over is a staged file plus a manifest: rows, counts, release, licence, per-row provenance, hashes. That is the same shape as any other source, so
-**station A can point at station C's hand-over through B** and get a corpus of corpora. The chain is kept: every row names the manifest it came through *and*
-the authority that produced it, licences are copied forward transitively, and a chain looping back to a dataset you already publish is refused. Contract:
-[`docs/MANIFEST.md`](docs/MANIFEST.md) §4; honest limit: a federated row can claim `verified: manifest`, never `verified: upstream`.
+A hand-over is a staged file plus a manifest: rows, counts, release, licence, per-row provenance, hashes. That is the same shape as any other source, so a
+station can point at **another station's hand-over** — and keep pointing, station to station:
+
+```
+   ┌───────────┐   hand-over: staged file + manifest     ┌───────────┐   hand-over: staged file + manifest     ┌───────────┐
+   │ STATION A │ ────────────────────────────────────►   │ STATION B │ ────────────────────────────────────►   │ STATION C │
+   │ collects  │   rows · counts · release · licence     │ enriches  │   rows · counts · release · licence     │ researches│
+   │ raw       │   per-row source+release+sha256         │ + joins   │   per-row source+release+sha256         │           │
+   └───────────┘                                        └───────────┘                                        └───────────┘
+        ▲                                                     ▲                                                     │
+        │  the original authority (e.g. a public database)    │  C can walk the chain back: C → B → A → authority    │
+        └─────────────────────────────────────────────────────┴─────────────────────────────────────────────────────┘
+```
+
+**Connections are not transitive; provenance is.** C never talks to A, but every row C holds can name the manifest it came through *and* the authority that
+produced it, because each hop keeps both levels and copies the licences forward. A chain that loops back to a dataset you already publish is refused
+(`REFUSED[provenance-cycle]`). Contract: [`docs/MANIFEST.md`](docs/MANIFEST.md) §4. Honest limit: a federated row can claim `verified: manifest` (the copy
+agrees with its manifest) and never `verified: upstream` (re-derived from the authority) — federation gives you the integrity of a copy, not the truth of a
+re-derivation.
+
+### An MCP server can be a source
+
+Any MCP server that exposes a **count** can be pointed at like any other source — the station has a generic adapter (`symbiont/adapters/mcp_source.py`) and
+ships one pinned example: `@cyanheads/pubmed-mcp-server` 2.12.0, consumed over stdio as the literature arm. The rule is the same as for every source: *a
+tool that cannot say how many records it has is a tool, not a source* — `REFUSED[no-count-endpoint]`. That single rule is why a repository is refused as a
+source and an MCP that answers "0 of 399" is accepted.
 
 ## What a run produces (a test drive, not a delivery)
 
@@ -141,6 +214,22 @@ hand-over     staged file + handover.json (counts · rejects · licence per sour
 ```
 
 Reproducible from the two public releases named above. Not a curated delivery, and no claim about completeness — only that every number can be re-derived.
+
+## What you could build with it
+
+Because the guarantees are generic, the same machine answers very different questions. Four that we have actually run or wired:
+
+```
+CROSS-SECTIONAL SPECIES COMPARISON   mouse evidence × human evidence at one time point: gene identity + phenotypes + orthologs + disease terms + papers,
+                                     assembled with a hashed spec that refuses when a required dataset is missing
+REGIONAL SURVEILLANCE                reference resistance mechanisms × a region's published surveillance reports — with the honest note that aggregate
+                                     percentages cannot be joined to individual isolates
+MARKET / COST SCOUTING               provider tables × measured latency, each row pinned to the vendor's own revision of the table
+A CORPUS A LAB CAN RE-RUN            any of the above handed over as a manifest, so a reviewer re-derives the numbers years later
+```
+
+And the composability above means a research group can **share collections without sharing infrastructure**: publish a hand-over, and the next group ingests it
+with the chain and the licences intact.
 
 ## What this deployment has not wired *yet*
 
@@ -187,6 +276,13 @@ $ python3 -m symbiont.manifest --store ./store --entity mouse_gene --out handove
 MCP in two directions, deliberately separate authorities: a **read** door for asking (the seven tools above) and a **machine** door for operating (health,
 probe, evaluate, sandbox, card, admit). Ingestion is a third actor — the loop. A clone answers from the committed fixture store, so an assistant can be
 connected before any data is mined.
+
+### The reading door is extensible
+
+The seven tools are a starting set, not a limit. A deployment adds a read tool the way `research_check` was added — as an eighth — and it inherits the same
+contract automatically: one of the closed statuses (`ok · empty · refused · unavailable · error`), provenance on every item (`source · release · fetched_at ·
+sha256`), a refusal by name rather than a crash, and **read-only** — so extending the door can never widen what the station is allowed to do. That is the
+point of the split: asking grows with the questions; permission does not grow with the answers.
 
 **What needs a model or a key, exactly:** no model is used anywhere. The core needs no key — it reads public files over plain HTTPS, and answers offline once
 a store exists. Discovery asks a public search API (an optional token only raises its rate limit), and the literature arm talks to a pinned MCP server over
