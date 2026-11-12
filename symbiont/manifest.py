@@ -10,6 +10,11 @@ and nothing else. So this module does exactly four things:
   2. MANIFEST   one JSON artefact: dataset id · entity · rows with accessions · source + source_release
                 per row · content hash of the staged file · total counts · rejects with reasons ·
                 licence/attribution · append-only flag. Every §7 field is checked BY NAME.
+                AND THE DATASET/RELEASE LEVEL (req-P1-IDENTITY-THREE-LEVELS-adapter-data): per
+                source the manifest states dataset_id (<publisher>:<dataset>, stable across
+                releases) and version_id (<dataset_id>:<release>, derived), so a row's version is
+                never ambiguous — the release string alone cannot tell 'the previous version of
+                THIS dataset' from 'a DIFFERENT dataset'.
   3. DRY-RUN    print what WOULD be appended (rows, collisions, rejects, ledger state) and write
                 NOTHING — not one directory, not one byte. A dry-run that writes is a lie.
   4. RECEIPT    a row in the shape of reports/UPLOADS.tsv, for the uploader to append to its ledger.
@@ -34,6 +39,8 @@ import re
 import shutil
 import sys
 import tempfile
+
+from . import contract, events
 
 MANIFEST_VERSION = 1
 
@@ -267,6 +274,140 @@ def ledger_state(ledger: str, staged_sha: str) -> dict:
 
 
 # ---------------------------------------------------------------- §7 validation, BY NAME
+# ---- the handover's COVERAGE BLOCK (req-P1-THE-RESEARCH-SPEC-what-a-question-req) -----------
+# The manifest already says what WAS handed over. This block says whether what was handed over is
+# the WHOLE of what the question required — taken from the RUN RECORD (which resolved the releases)
+# and the SPEC (which stated the requirements), never re-decided here. Every acquired dataset points
+# at its acquisition record (run record + state + the raw snapshots), so a reader can walk from the
+# handover back to the bytes.
+COVERAGE_FIELDS = ["research_id", "spec_sha256", "required", "acquired", "missing", "complete",
+                   "selection"]
+
+
+def _coverage_block(run_record: dict, store: str) -> dict:
+    """The coverage block: AS THE RUN MEASURED IT, plus the pointers and two cross-checks.
+
+    Three readers must never disagree about whether coverage was complete — the run record, the
+    finding and the manifest. So this block is COPIED from the run record and then VERIFIED:
+      · every acquired sha256 must be the sha256 the run record's own fetch wrote, and
+      · the spec on disk must still hash to the spec the run used (an edited spec is a DIFFERENT
+        investigation; a run record may never be re-read under a weaker one).
+    A run that named no spec still states that, by name: coverage is never absent, and never
+    assumed complete.
+    """
+    research = run_record.get("research") or {}
+    cov = run_record.get("coverage") or {}
+    if not research and not cov:
+        return {
+            "present": False,
+            "research_id": None,
+            "spec_sha256": None,
+            "required": [],
+            "acquired": [],
+            "missing": [],
+            "complete": None,
+            "selection": {},
+            "why": ("the run named no research spec (no --research), so what this investigation "
+                    "REQUIRED is not stated anywhere: this manifest makes no coverage claim, and "
+                    "invents none"),
+        }
+
+    out = {"present": True, "why": None}
+    for k in COVERAGE_FIELDS:
+        out[k] = cov.get(k, research.get(k))
+    out["complete"] = bool(cov.get("complete")) if cov else None
+    out["status"] = cov.get("status") or "unknown"
+    out["missing_by_class"] = cov.get("missing_by_class") or {"required": [], "optional": []}
+    out["optional_missing_allowed"] = True
+    out["finding"] = cov.get("finding") or research.get("finding")
+    out["spec_path"] = research.get("spec_path") or cov.get("spec_path") or ""
+
+    # --- cross-check 1: the bytes behind each acquired dataset are the bytes the run wrote -----
+    fetch = {}
+    for sid, src in (run_record.get("sources") or {}).items():
+        for reskey, r in ((src.get("fetch") or {}).get("resources") or {}).items():
+            fetch[(sid, reskey)] = r.get("sha256")
+    disagreements = []
+    for a in out["acquired"]:
+        for r in a.get("resources") or []:
+            got = fetch.get((a.get("source"), r.get("reskey")))
+            if got is not None and got != r.get("sha256"):
+                disagreements.append(f"{a.get('dataset')}:{r.get('reskey')} coverage says "
+                                     f"{r.get('sha256')} but the run record fetched {got}")
+    out["agrees_with_run_record"] = not disagreements
+    out["disagreements"] = disagreements
+
+    # --- cross-check 2: is the spec on disk still the spec this run used? ---------------------
+    vs = {"changed_since_run": None}
+    if research.get("spec_path"):
+        try:
+            from . import research as _research
+            vs = _research.verify_spec(research["spec_path"], research.get("spec_sha256") or "")
+        except Exception as e:                    # never a reason to invent a verdict
+            vs = {"changed_since_run": None, "error": f"{type(e).__name__}: {e}"}
+    out["spec_verified"] = vs
+    return out
+
+
+def _coverage_line(m: dict) -> str:
+    """One stdout line per manifest: whether the handover is the WHOLE of what was required."""
+    cov = m.get("coverage") or {}
+    if not cov.get("present"):
+        return ("COVERAGE not stated — the run named no research spec (no --research): this "
+                "handover makes no coverage claim")
+    return (f"COVERAGE {cov.get('status')}  complete={cov.get('complete')}  "
+            f"research_id={cov.get('research_id')}  spec_sha256={cov.get('spec_sha256')}  "
+            f"acquired={[(x.get('dataset'), x.get('release')) for x in cov.get('acquired') or []]}  "
+            f"missing={cov.get('missing') or 'none'}")
+
+
+def validate_coverage(manifest: dict) -> list[str]:
+    """The coverage block's OWN checks, each failure NAMING the field. Silent when the run named no
+    spec (the block then says so and makes no claim), strict whenever it did."""
+    cov = manifest.get("coverage")
+    if cov is None:
+        return ["REFUSED[bad-input] manifest carries no coverage block — whether the question was "
+                "ANSWERED is not stated anywhere in the handover (req-P1-THE-RESEARCH-SPEC)"]
+    if not cov.get("present"):
+        if cov.get("complete") is not None or cov.get("spec_sha256"):
+            return ["REFUSED[bad-input] coverage.present is false but the block still claims a "
+                    "verdict — a manifest with no spec must make no coverage claim"]
+        return []
+    errs = []
+    if not cov.get("research_id"):
+        errs.append("REFUSED[bad-input] coverage.research_id is empty — the handover must name the "
+                    "investigation whose coverage it states")
+    sha = cov.get("spec_sha256") or ""
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        errs.append(f"REFUSED[bad-input] coverage.spec_sha256 is not a sha256 ({sha!r})")
+    if not isinstance(cov.get("complete"), bool):
+        errs.append(f"REFUSED[bad-input] coverage.complete must be true or false, got "
+                    f"{cov.get('complete')!r}")
+    for k in ("required", "acquired", "missing"):
+        if not isinstance(cov.get(k), list):
+            errs.append(f"REFUSED[bad-input] coverage.{k} must be a list, got {cov.get(k)!r}")
+    if cov.get("complete") is True and cov.get("missing"):
+        errs.append(f"REFUSED[bad-input] coverage.complete is true but missing[] names "
+                    f"{cov.get('missing')} — an incomplete coverage cannot look complete")
+    if not cov.get("selection"):
+        errs.append("REFUSED[bad-input] coverage.selection is empty — the arms and filters the run "
+                    "CHOSE must travel with the handover")
+    for a in cov.get("acquired") or []:
+        for k in ("dataset", "release", "sha256"):
+            if not a.get(k):
+                errs.append(f"REFUSED[bad-input] coverage.acquired entry is missing {k}: {a!r}")
+        acq = a.get("acquisition") or {}
+        if not acq.get("run_record"):
+            errs.append(f"REFUSED[bad-input] coverage.acquired {a.get('dataset')!r} points at no "
+                        f"acquisition record (acquisition.run_record) — a dataset in the handover "
+                        f"must be traceable to the run that acquired it")
+        elif not os.path.exists(acq["run_record"]):
+            errs.append(f"REFUSED[bad-input] coverage.acquired {a.get('dataset')!r} points at an "
+                        f"acquisition record that does not exist at validate time: "
+                        f"{acq['run_record']}")
+    return errs
+
+
 def _get(m: dict, dotted: str):
     cur = m
     for part in dotted.split("."):
@@ -299,10 +440,74 @@ def validate(manifest: dict) -> list[str]:
         if col not in (manifest.get("staged") or {}).get("columns", []):
             errs.append(f"REFUSED[bad-input] staged file has no {col} column (§7: source + "
                         f"source_release PER ROW) — columns are {manifest.get('staged', {}).get('columns')}")
+    dg = (manifest.get("store") or {}).get("diary") or {}
+    if dg.get("anchored") and dg.get("matches") is not True:
+        errs.append("REFUSED[diary-altered] store.diary anchors a head the diary no longer answers "
+                    f"to ({dg.get('detail')}) — the manifest repeats a history it cannot verify")
+    errs.extend(validate_coverage(manifest))
     return errs
 
 
 # ---------------------------------------------------------------- build the handover
+def _store_identity_config(store: str) -> dict:
+    """The sources.yml persisted BESIDE the run (digests._store_cfg writes it), when it can be
+    read. The manifest derives a row's dataset identity from the SAME declaration the fetch used,
+    so the handover cannot state an identity the run did not have."""
+    p = os.path.join(store, "sources.yml")
+    if not os.path.isfile(p):
+        return {}
+    try:
+        return contract.load_sources(p)
+    except Exception:
+        return {}          # an unreadable/older config is NOT a reason to invent an identity
+
+
+def _source_identity(name: str, release: str, prov_src: dict, store_cfg: dict) -> tuple[str, str]:
+    """(dataset_id, version_id) for ONE source, in that order of evidence:
+         1. the run's own view provenance — the loop derived both at publish time;
+         2. else the store's persisted sources.yml, through the SAME helpers the loop used;
+         3. else ('', '') — the caller names the absence, it never guesses."""
+    ds = (prov_src.get("dataset_id") or "").strip()
+    vid = (prov_src.get("version_id") or "").strip()
+    if ds and vid:
+        return ds, vid
+    cfg = store_cfg.get(name)
+    if cfg:
+        try:
+            return contract.dataset_id(cfg), contract.version_id(cfg, release)
+        except contract.ConfigError:
+            pass
+    return "", ""
+
+
+def _diary_block(store: str, run_record: dict) -> dict:
+    """THE DIARY'S ANCHOR, CARRIED AND RE-CHECKED (req-P1-THE-DIARY-appended-by-the-code-nev).
+
+    The diary's hash chain makes an alteration of one line visible; it cannot stop someone
+    rewriting the whole file and recomputing every link. So the head hash is ANCHORED where it
+    costs something to forge: the run record wrote it down when it was the head, this manifest
+    repeats it, and the two are checked against the diary ON DISK as the manifest is built. A
+    mismatch is REFUSED[diary-altered] — never a warning, because a manifest is the artefact the
+    recipient trusts.
+    """
+    anchor = dict(run_record.get("diary") or {})
+    path = events.diary_path(store)
+    if not anchor:
+        return dict(path=path, anchored=False, seq=None, head_sha256=None, matches=None,
+                    note=("this run record predates the diary: no head was anchored, so the "
+                          "handover makes no claim about history it cannot check"))
+    ok, why = events.head_matches(store, anchor)
+    problems = events.read(store).problems
+    if problems:                       # an ALTERATION anywhere breaks the chain, not only the tail
+        ok, why = False, events.report(path, problems)
+    return dict(path=path, anchored=True, seq=anchor.get("seq"),
+                head_sha256=anchor.get("head_sha256"), events=anchor.get("events"),
+                anchored_in=anchor.get("anchored_in"), matches=ok, detail=why,
+                note=("the recipient can re-run `python3 -m symbiont.registry verify --store "
+                      "<store>` and must see this same head: rewriting the diary then also means "
+                      "rewriting this manifest, which has already been handed over"))
+
+
 def build(store: str, entity: str, stage_path: str, ledger: str | None,
           dry_run: bool) -> dict:
     store = os.path.abspath(store)
@@ -319,6 +524,15 @@ def build(store: str, entity: str, stage_path: str, ledger: str | None,
         raise Refusal("bad-input", f"view provenance states no run_id: {prov_path}")
     run_record = read_json(os.path.join(store, "runs", f"{run_id}.json"), f"the run record for {run_id}")
 
+    # the diary's anchor is checked BEFORE anything is rendered: a manifest that repeats a head the
+    # diary on disk no longer answers to would launder an altered history into the handover.
+    diary_block = _diary_block(store, run_record)
+    if diary_block.get("anchored") and not diary_block.get("matches"):
+        raise Refusal("diary-altered",
+                      f"the diary {diary_block['path']} does not answer to the head run {run_id} "
+                      f"anchored: {diary_block.get('detail')} — REFUSED, no manifest is written; "
+                      f"history was altered after the run")
+
     sources = prov.get("sources") or {}
     if not sources:
         raise Refusal("bad-input", f"view provenance names no sources: {prov_path}")
@@ -326,7 +540,8 @@ def build(store: str, entity: str, stage_path: str, ledger: str | None,
     order = sorted(sources, key=lambda n: (0 if roles.get(n) == "id_authority" else 1, n))
 
     # --- releases PER SOURCE, from the store's own state + provenance (never invented) --------
-    per_source, missing_state = [], []
+    store_cfg = _store_identity_config(store)
+    per_source, missing_state, identity_unknown = [], [], []
     for n in order:
         state_path = os.path.join(store, "state", f"{n}.json")
         if os.path.exists(state_path):
@@ -338,9 +553,20 @@ def build(store: str, entity: str, stage_path: str, ledger: str | None,
         if not release:
             raise Refusal("bad-input", f"no release recorded for source {n!r} (state/{n}.json or "
                                        f"view provenance) — source_release PER ROW cannot be stated")
+        dataset, version = _source_identity(n, release, sources[n] or {}, store_cfg)
+        if not (dataset and version):
+            identity_unknown.append(
+                f"source {n!r}: no dataset identity in the view provenance and none derivable from "
+                f"{os.path.join(store, 'sources.yml')} — its rows name a release ({release}) but not "
+                f"the DATASET that release belongs to (declare publisher+dataset in sources.yml: "
+                f"req-P1-IDENTITY-THREE-LEVELS-adapter-data)")
         per_source.append({
             "source": n,
             "source_release": release,
+            # THE DATASET LEVEL (stable across releases) and the DERIVED version (which release of
+            # it): both quoted verbatim from the run's provenance, never re-spelt here.
+            "dataset_id": dataset,
+            "version_id": version,
             "role": roles.get(n, ""),
             "licence": (sources[n] or {}).get("licence") or {},
             "published_count": (sources[n] or {}).get("published_count"),
@@ -396,12 +622,17 @@ def build(store: str, entity: str, stage_path: str, ledger: str | None,
     coll["vs_ledger"] = ledger_state(ledger or "", staged_sha)
 
     dataset_id = f"symbiont.{view_name}.v{version}"
+    coverage = _coverage_block(run_record, store)
     manifest = {
         "manifest_version": MANIFEST_VERSION,
         "generated_at": utc_now(),
         "dataset_id": dataset_id,
         "entity": entity,
         "append_only": True,
+        # WHETHER THE QUESTION WAS ANSWERED (req-P1-THE-RESEARCH-SPEC-what-a-question-req): the §7
+        # fields say what was handed over; this block says whether that is the WHOLE of what the
+        # investigation required — and names what is missing when it is not.
+        "coverage": coverage,
         "store": {
             "path": store,
             "view": view_name,
@@ -414,6 +645,9 @@ def build(store: str, entity: str, stage_path: str, ledger: str | None,
             "provenance_rows": prov.get("rows"),
             "run_id": run_id,
             "run_record": os.path.join(store, "runs", f"{run_id}.json"),
+            # THE DIARY (the facts) and its anchored head: what the store DID, as opposed to what
+            # it holds. A recipient can verify both without either MCP door.
+            "diary": diary_block,
         },
         "rows": {
             "count": count_stage_bytes(staged_bytes),
@@ -433,6 +667,12 @@ def build(store: str, entity: str, stage_path: str, ledger: str | None,
             "value_form": "role order id_authority first, then xref_provider; multiple sources pipe-joined",
             "source": stage_source,
             "source_release": stage_release,
+            # source_release is the LEVEL-3 half a row carries; these two blocks state the whole
+            # identity behind it, so 'which release did we admit, and which is current' is answerable
+            # from the handover alone (req-P1-IDENTITY-THREE-LEVELS-adapter-data).
+            "dataset_ids": {s["source"]: s["dataset_id"] for s in per_source},
+            "version_ids": {s["source"]: s["version_id"] for s in per_source},
+            "identity_unknown": identity_unknown,
             "fields": {
                 "symbol": ", ".join(s["source"] for s in per_source if s["role"] == "xref_provider") or stage_source,
                 "mgi_id": ", ".join(s["source"] for s in per_source if s["role"] == "xref_provider") or stage_source,
@@ -496,6 +736,17 @@ def build(store: str, entity: str, stage_path: str, ledger: str | None,
                       for s in per_source],
         },
         "warnings": ([f"no state file for a source, release taken from provenance: {p}" for p in missing_state]
+                     + identity_unknown
+                     + ([f"research coverage is NOT complete ({coverage.get('status')}): missing "
+                         f"{coverage.get('missing')} — {coverage.get('finding')}"]
+                        if coverage.get("present") and coverage.get("complete") is False else [])
+                     + ([f"coverage disagrees with the run record: {d}" for d in
+                         (coverage.get("disagreements") or [])])
+                     + ([f"the research spec on disk is no longer the spec this run used "
+                         f"({(coverage.get('spec_verified') or {}).get('current_spec_sha256')} vs "
+                         f"{(coverage.get('spec_verified') or {}).get('recorded_spec_sha256')}) — "
+                         f"this is a DIFFERENT investigation, not a re-read of this one"]
+                        if (coverage.get("spec_verified") or {}).get("changed_since_run") else [])
                      + ([] if xref["agrees_with_run_record"] in (True, None) else
                         [f"unresolved count disagrees with the run record: xref.tsv={xref['unresolved_keys']} "
                          f"run={xref['run_record_unresolved_keys']}"])),
@@ -627,6 +878,7 @@ def run(store: str, entity: str, out: str | None, stage: str | None, ledger: str
     say(f"LICENCE  {m['licence']['attribution']}")
     say(f"RECEIPT  {receipt_path}  (append: tail -n +2 '{receipt_path}' >> {ledger or 'reports/UPLOADS.tsv'})")
     say(f"§7 CHECK {len(REQUIRED_FIELDS)}/{len(REQUIRED_FIELDS)} fields present, each named")
+    say(_coverage_line(m))
     if m["warnings"]:
         for w in m["warnings"]:
             say(f"WARN     {w}")

@@ -38,7 +38,7 @@ manifest — git history is tamper-evident, not tamper-proof.
 ## 3 · EVENT CLASSES
 ```
 discovered · evaluated · sandboxed · admitted · intent_changed · acquired · release_moved · count_ok · count_mismatch ·
-stale · unreadable · vanished · retired · manual_add · manual_override · override_expired
+schema_changed · stale · unreadable · vanished · retired · manual_add · manual_override · override_expired
 each event: {seq, ts, source_id, release?, class, actor: machine|operator, why, evidence{...}, origin: live|backfill, prev_event_sha256}
 ```
 
@@ -127,3 +127,85 @@ the staged file plus `handover.json` and never touches either MCP. That is the s
 **The reading layer is NOT the analysis layer.** It exposes evidence with provenance; a grounded-science process consumes those doors and produces
 interpretation — candidates, claims, refutation conditions. One answers questions about records; the other proposes what the records might mean. Keeping
 those apart is what stops an interpretation from being mistaken for a record.
+**Declared endpoints only.** The sandbox reaches only hosts the entry declares (data · licence · metadata), with redirects resolved once at admission and pinned; a 302 to an undeclared host is refused by name. The goal is that the sandbox can always reach the evidence it needs to judge a source, without ever widening beyond the declaration.
+
+### 9a · WHAT THE READING DOOR DOES NOT HAVE YET (stated, so an empty section is explainable)
+An empty section from this door is always NAMED — but a named empty can still be ambiguous to a reader, so here is what is missing and why.
+
+| the arm | state | what a reader sees today | what fills it |
+|---|---|---|---|
+| **literature** (publications per gene) | the door READS it when the store has the view, and stamps `evidence_level` · `abstract_stored` · `licence` · `release` on every item | real PMIDs with their evidence level, or a named empty when the arm is absent | a literature harvest at scale (`loop` against the pinned PubMed MCP); the store currently holds a small run |
+| **phenotype ontology** (MP terms per gene) | **BUILT but NOT READ by the door** — the store has a `gene_phenotype` view and `phenotype_evidence` still answers "no phenotype-annotation source is in this store", because the view's source name (`mgi_genepheno`) is not the name the door looks for (`mgi_phenotype_annotations`) | a named empty that reads like "nothing is known" | the same treatment the literature arm just got: read the view, stamp `evidence_code` · `citation` · `statement` · `release`; and a real harvest of `MGI_GenePheno.rpt` |
+
+**Why the phenotype wiring is not done here:** it changes what two existing self-tests assert (the fixture store answers "source not in store" today), so
+it is filed as its own change rather than smuggled in with the literature one. Until then, a reader should treat "no phenotype-annotation source in this
+store" as a statement about the STATION, not about the biology.
+
+The coverage engine already says this without the reader having to infer it: `research_check` reports `complete: false` with
+`missing: [mgi_phenotype_annotations, pubmed]`, and states `acquisition performed: NO · corpus modified: NO`.
+
+### 9b · THE READ DOOR'S CONTRACT — statuses, no asserts, one clock
+Four rules, each learned by a real end-to-end run rather than by a review.
+
+```
+1 A CLOSED STATUS SET. Every response carries exactly one of: ok · empty · refused · unavailable · error, plus a `reason` code. "empty" means the query
+  succeeded and nothing matched; "unavailable" means the evidence or capability is missing; "refused" means the door declined on purpose; "error" means a
+  known, reported failure. An unexpected exception is never a transport event.
+2 A READ PATH NEVER ASSERTS. Assertions guard the writer's invariants; a reader meets the world and must refuse by name. A missing release becomes
+  `missing_release` on that item; an unparseable instant becomes `uncomparable_timestamp`; the rest of the answer still returns. (Two crashes in one day
+  came from exactly this: an assert, and a comparison.)
+3 ONE CLOCK. Timestamps are compared through one normaliser: a naive timestamp is read as UTC and marked aware, never mixed with an aware one. Every
+  caller uses it — the `since` filter, run records, digests, the manifest, both receipt readers.
+4 THE CHECK IS A SCRIPT. `annot/e2e_read.py` calls every read tool against a store and asserts: a status from the closed set, no JSON-RPC error for a
+  well-formed call, every item carrying accession · source · release · fetched_at · sha256, and the store's manifest unchanged afterwards. It runs in a
+  clone, and it is the reason the two crashes above are now regression-tested.
+```
+
+A well-formed request may legitimately receive `empty`, `unavailable` or `refused`. What it may never receive is an unexplained internal error.
+
+## 10 · FEDERATION — a station as another station's source
+A handover manifest is source-shaped: rows, counts, release, licence, per-row provenance, hashes. So one station's output can be another station's input,
+through the same funnel — no new machinery, one adapter. The obligations are a contract, not an aspiration, and they live in
+[`docs/MANIFEST.md`](MANIFEST.md) §4: keep both provenance levels (`via:` plus the upstream source and release), copy licences forward transitively,
+refuse a `via:` chain that contains a dataset this station publishes (`REFUSED[provenance-cycle]`), and keep verification depth honest — a federated row
+may claim `verified: manifest` (transport integrity) and never `verified: upstream` (re-derived from the authority).
+
+The same section states the honest limit: federation gives you the integrity of a COPY. Re-derivation from the authority is the only thing that gives you
+the data's own truth, and a corpus that mixes the two without labelling them overstates itself.
+
+**PROPOSED, NOT BUILT — owner-governed orchestration.** An "expedition" would be a route with ordered checkpoints under an owner-defined policy, and the
+policy would inherit the station's: the effective policy is `meet(station, expedition)` — permissions intersected, prohibitions unioned, budgets minimised,
+approvals unioned — so a route may narrow what it is allowed to do and never widen it, and every refusal names the layer that refused (`by=station` vs
+`by=expedition`). The parts that cannot be retrofitted cheaply are three, and they are station code: the `meet()` function, three orthogonal grants
+(write · spend · attention) with levels only as versioned presets, and the expedition as a **third actor** in the event log (`actor: expedition:<name>`)
+with the route's sha pinned in the run record and the manifest. Until those exist, this section is a design note.
+
+## 11 · WHAT THE STATION SPEAKS — three transports, and what an "expedition" is not
+The station talks to the world in exactly three ways, and they are not interchangeable. This section exists because "does it use MCP? does it use a web search?"
+has one honest answer per job, and the answer is different for each.
+
+```
+1 PLAIN HTTPS (urllib, no SDK, no key)      symbiont/http.py
+   every fetch, every probe, every update check, every licence read. Discovery is this: one GET to a search API, and the number that comes back is the API's
+   own total_count. No model, no key, no browser.
+
+2 MCP CLIENT (stdio JSON-RPC)              symbiont/literature/mcp.py · symbiont/adapters/mcp_source.py
+   used as a TRANSPORT TO A SOURCE, never as a way to find sources. The pinned server is @cyanheads/pubmed-mcp-server 2.12.0; the generic adapter lets any
+   MCP server be a source PROVIDED IT EXPOSES A COUNT — otherwise REFUSED[no-count-endpoint], which is what happened to eight of nine candidates in the
+   AMR discovery test.
+
+3 WEB SEARCH (Exa and friends)             NOT IN THE STATION — zero references.
+   an outward search sense belongs to the research layer, not to the machine. Every portal we found with it (WHO GLASS, Africa CDC, MONDO, the HF
+   repackaging) arrived as a CANDIDATE that then had to pass the same funnel as anything else.
+```
+
+**And "expedition" is not a fourth transport — it is not built at all.** The word appears in comments and in the blueprint; there is no route file, no
+checkpoint, no cargo. What exists is three mechanisms the word would compose:
+```
+THE CYCLE    one bounded pass over a surface registry (discover/watch), 15–30 s, a report per run
+THE LOOP     one fetch + verify + store for each enabled source
+THE FUNNEL   probe → evaluate → draft → sandbox → card → admit, per candidate
+```
+An expedition — *a scout with a route: ordered checkpoints, a budget per checkpoint, a verifier per checkpoint, and cargo that accumulates* — would be a
+route file laid over those three, using the same transports. Until it is built, the sentence "a scout is the discovery light looking outward; an expedition
+is a scout with a route" stays a design note, not a capability.

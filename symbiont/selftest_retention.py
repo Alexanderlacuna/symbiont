@@ -37,7 +37,7 @@ import sys
 import tempfile
 import threading
 
-from .selftest_sources import (_Handler, ENSEMBL_LICENCE, MGI_LICENCE, write_config,
+from .selftest_sources import (_Handler, ENSEMBL_LICENCE, MGI_LICENCE, seed, write_config,
                                base_sources)
 from .admission_policy import DEFAULT_POLICY
 from .retention import release_set, read_json
@@ -119,6 +119,7 @@ def main(argv=None) -> int:
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     host = f"http://127.0.0.1:{srv.server_address[1]}"
     cfg = write_config(os.path.join(tmp, "sources.yml"), base_sources(host))
+    seed(store, cfg)                       # the fixture admits what it enabled
 
     results = []
 

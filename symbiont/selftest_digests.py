@@ -99,6 +99,8 @@ def start_server(root):
 
 
 def loop(store, cfg, *extra):
+    from .selftest_sources import seed
+    seed(store, cfg)                      # the fixture admits what it enabled
     return subprocess.run([sys.executable, "-m", "symbiont.loop", "--store", store,
                            "--sources-config", cfg, *extra],
                           capture_output=True, text=True, cwd=FARM)

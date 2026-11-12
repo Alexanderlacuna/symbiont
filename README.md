@@ -30,8 +30,12 @@ The station speaks MCP in two directions on purpose, and they are separate autho
 | **machine** — operating | `python3 -m symbiont.mcpserver` | `source_health` · `source_probe` · `source_evaluate` · `source_draft` · `source_sandbox` · `source_card` · `source_admit` | yes, but only **admission** — it never fetches or stores rows |
 
 Ingestion is a third actor: the loop (`python3 -m symbiont.loop`) is the only thing that widens the corpus, and it cannot widen permissions. And the
-**manifest** is a third surface that needs no authority at all — an uploader inside another project, a bucket loader, or `sha256sum` reads the staged file
+**manifest** is a third surface that needs no authority at all — a uploader inside another project, a bucket loader, or `sha256sum` reads the staged file
 plus `handover.json` without touching either door. The reading layer exposes evidence; it does not interpret it (see [`docs/DESIGN.md`](docs/DESIGN.md) §9).
+
+The manifest's contract — including verification depth and the rules for a station consuming another station's handover — is in [`docs/MANIFEST.md`](docs/MANIFEST.md).
+
+**What it speaks:** plain HTTPS for every fetch and every discovery query · an MCP *client* for the pinned PubMed server (as a transport to a source, and only if it exposes a count) · and no web search inside the station — the outward search sense belongs to the research layer. See [`docs/DESIGN.md`](docs/DESIGN.md) §11, which also says plainly that "an expedition" is design, not code.
 
 ## Start here — the quickstart
 

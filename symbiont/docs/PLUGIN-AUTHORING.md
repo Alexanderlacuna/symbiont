@@ -106,3 +106,19 @@ from disk and re-hash → normalise + accounting → verify (ours vs the source'
 join → publish. Your adapter is called for its four calls and nothing else; every refusal the
 loop can raise is named (`budget | licence-unknown | source-gone | schema-drift`), every reject
 has a reason, and the run record carries the lot.
+
+## 5a · What a hash proves, and what it does not (the drift signal's limit)
+
+A pinned MCP server is trialled at admission and its `tools/list` (plus its declared version) is hashed. On every later run the hash is re-read: a change is
+`REFUSED[schema-drift]` and the source's trial EXPIRES, so it must be re-trialled before it can harvest again. That is the most that a boundary check can do,
+and its limit is worth stating rather than discovering:
+
+```
+A HASH PROVES A SHAPE, NEVER AN INTENT.
+   a changed tool list            -> caught (REFUSED[schema-drift], trial expired)
+   a changed argument schema      -> caught if it is inside the hash, otherwise only when a call fails
+   SAME shape, DIFFERENT meaning  -> NOT CAUGHT. A server can keep three tools and the same arguments and change what "query" returns.
+```
+The same limit appears where a station consumes another station's handover (`docs/MANIFEST.md` §2b): a schema hash catches a shape change, never a semantic
+one. In both places the honest consequence is identical — the standing controls are the COUNT CHECK and the LICENCE GATE, not the hash, and a federated or
+MCP-derived row may only ever claim the verification depth it actually got.

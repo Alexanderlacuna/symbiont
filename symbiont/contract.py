@@ -174,7 +174,12 @@ DEFAULT_SOURCES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sour
 
 SOURCE_KEYS = ("id", "adapter", "enabled", "base_url", "endpoints", "storage", "rate_limit",
                "licence_url", "licence_text", "staleness", "budget")
-SOURCE_OPTIONAL = ("note", "quarantined")
+# `publisher` + `dataset` are the DATASET level of identity (req-P1-IDENTITY-THREE-LEVELS-adapter-data):
+# DECLARED, and validated whenever present — but OPTIONAL in the schema, deliberately: a config written
+# before this row (a trial adapter's one-source config, a store's persisted sources.yml) must still
+# load and run. What is NOT optional is the honesty of the derived id: contract.dataset_id() REFUSES
+# BY NAME on a source that declares neither, so an identity is never invented by a reader.
+SOURCE_OPTIONAL = ("note", "quarantined", "publisher", "dataset")
 BUDGET_KEYS = ("requests", "bytes", "wall_s")
 RATE_KEYS = ("requests_per_minute", "min_interval_s")
 STALE_KEYS = ("policy_days",)
@@ -233,6 +238,18 @@ def load_sources(path: str = DEFAULT_SOURCES) -> dict:
         _need(not missing, f"{where} is missing required key(s) {missing}")
         _need(sid not in out, f"{where} is defined twice")
         _need(isinstance(cfg["adapter"], str) and cfg["adapter"], f"{where}: `adapter` must name an adapter module")
+        # THE DATASET LEVEL (req-P1-IDENTITY-THREE-LEVELS-adapter-data): publisher + dataset are
+        # DECLARED (optional), and the ids are derived from them (dataset_id / version_id below) —
+        # never typed into a run record, a digest or an event. Validated only when present: a ':'
+        # inside either half is refused, because the derived id is '<publisher>:<dataset>' and a
+        # colon in a half would make it ambiguous.
+        for k in ("publisher", "dataset"):
+            if k not in cfg:
+                continue
+            v = cfg[k]
+            _need(isinstance(v, str) and v.strip(), f"{where}: `{k}` must be a non-empty string, got {v!r}")
+            _need(":" not in v, f"{where}: `{k}` {v!r} carries ':' — the dataset id is "
+                               f"<publisher>:<dataset>, so a colon inside a half makes it ambiguous")
         _need(isinstance(cfg["enabled"], bool), f"{where}: `enabled` must be true or false")
         _need(isinstance(cfg["base_url"], str) and cfg["base_url"].startswith(("http://", "https://")),
               f"{where}: `base_url` must be an http(s) URL, got {cfg['base_url']!r}")
@@ -301,6 +318,10 @@ def dump_sources(sources: dict) -> str:
         c = sources[sid]
         lines.append(f"  - id: {c['id']}")
         lines.append(f"    adapter: {c['adapter']}")
+        if c.get("publisher"):
+            lines.append(f"    publisher: {c['publisher']}")   # THE DATASET LEVEL, half one
+        if c.get("dataset"):
+            lines.append(f"    dataset: {c['dataset']}")       # THE DATASET LEVEL, half two
         lines.append(f"    enabled: {val(c['enabled'])}")
         if c.get("note"):
             lines.append(f"    note: {val(c['note'])}")
@@ -334,6 +355,113 @@ def dump_sources(sources: dict) -> str:
             for k in QUARANTINE_KEYS:
                 lines.append(f"      {k}: {val(q[k])}")
     return "\n".join(lines) + "\n"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# THE THREE LEVELS OF IDENTITY (req-P1-IDENTITY-THREE-LEVELS-adapter-data)
+#
+#   (1) ADAPTER          cfg["adapter"] == ADAPTER.name == the key of the run record and of
+#                        state/ + raw/. UNCHANGED here, so no adapter, store or record breaks.
+#   (2) DATASET          <publisher>:<dataset>, DECLARED in sources.yml, STABLE across releases:
+#                        two releases of one dataset share it; two datasets never do.
+#   (3) SOURCE-VERSION   <dataset_id>:<release>, DERIVED from (2) + the release the run actually
+#                        fetched. Never hand-typed: a version nobody derived cannot be written.
+#
+# WHY THE DISTINCTION IS LOAD-BEARING: a diary keyed on one string cannot tell 'the previous
+# version of this dataset' from 'a different dataset', and release_moved / count_mismatch / 'what
+# did we admit in November' all depend on that distinction. The two helpers below are the ONLY
+# definition sites; every future event writer, the view provenance and the manifest call them.
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+_SOURCES_CACHE: dict[str, tuple[int, dict]] = {}
+
+
+def _sources_map(path: str | None = None) -> dict:
+    """The shipped config, cached by (path, mtime_ns): an edited sources.yml is never served stale
+    (a cache that cannot see an edit would answer an identity question with the previous file)."""
+    p = os.path.abspath(path or DEFAULT_SOURCES)
+    try:
+        stamp = os.stat(p).st_mtime_ns
+    except OSError as e:
+        raise ConfigError(f"sources config unreadable ({p}): {type(e).__name__}: {e}") from e
+    hit = _SOURCES_CACHE.get(p)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    m = load_sources(p)
+    _SOURCES_CACHE[p] = (stamp, m)
+    return m
+
+
+def _source_cfg(source, path: str | None = None) -> dict:
+    """A source's declared fields: a cfg mapping as loaded, or the ID looked up in sources.yml.
+    Both shapes are accepted so a caller may pass what it already holds (the loop passes the cfg)
+    and a caller with only the name may still ask (dataset_id('mgi'))."""
+    if isinstance(source, dict):
+        return source
+    m = _sources_map(path)
+    sid = str(source)
+    _need(sid in m, f"{os.path.abspath(path or DEFAULT_SOURCES)}: no source {sid!r} — its "
+                    f"dataset identity cannot be named (the config and the caller disagree "
+                    f"about what exists)")
+    return m[sid]
+
+
+def dataset_id(source) -> str:
+    """LEVEL 2 — what is fetched, STABLE across releases: '<publisher>:<dataset>'.
+
+    `source` is a sources.yml entry (a cfg mapping) or a source id (looked up in the shipped
+    config). REFUSES BY NAME when the entry declares no publisher/dataset: an identity invented by
+    the reader is exactly the ambiguity this level exists to kill, so there is no fallback to `id`.
+    """
+    cfg = _source_cfg(source)
+    sid = cfg.get("id", source if isinstance(source, str) else "?")
+    pub = (cfg.get("publisher") or "").strip()
+    ds = (cfg.get("dataset") or "").strip()
+    _need(bool(pub) and bool(ds),
+          f"source {sid!r} declares no publisher/dataset in sources.yml — its dataset identity "
+          f"(<publisher>:<dataset>) cannot be derived, and one made up here would be a guess "
+          f"wearing an identity's clothes. Declare both fields; nothing is renamed by doing so")
+    _need(":" not in pub and ":" not in ds,
+          f"source {sid!r}: publisher {pub!r}/dataset {ds!r} carries ':' — <publisher>:<dataset> "
+          f"would be ambiguous")
+    return f"{pub}:{ds}"
+
+
+def version_id(source, release: str) -> str:
+    """LEVEL 3 — which release: '<dataset_id>:<release>'. DERIVED, never hand-typed.
+
+    The release is the adapter's own stamp (mgi 'mgi-2026-11-09', ensembl 'ensembl-116'), quoted
+    verbatim: this helper does not re-spell a release, because a release string that the store's
+    directories do not carry would name a version no file on disk answers to.
+    """
+    cfg = _source_cfg(source)
+    sid = cfg.get("id", source if isinstance(source, str) else "?")
+    r = release.strip() if isinstance(release, str) else ""
+    _need(bool(r), f"source {sid!r}: the version identity needs a release, got {release!r} — "
+                   f"<dataset_id>:<release> cannot be derived from nothing")
+    _need(":" not in r, f"source {sid!r}: release {r!r} carries ':' — <dataset_id>:<release> would "
+                        f"be ambiguous")
+    return f"{dataset_id(cfg)}:{r}"
+
+
+def identity(source, release: str | None = None) -> dict:
+    """THE THREE LEVELS in one dict — the shape the run record, the view provenance and the
+    manifest write (so the three readers cannot spell the same identity differently).
+
+    TOLERANT, on purpose: a source that declares no publisher/dataset carries None for the dataset
+    and version levels (a config written before this row must still RUN), and a source that has not
+    discovered yet has no release — None rather than "", so 'no version yet' is never mistaken for
+    'version ""'. A writer that MUST state an identity calls dataset_id()/version_id(), which
+    REFUSE by name instead."""
+    cfg = _source_cfg(source)
+    pub = (cfg.get("publisher") or "").strip()
+    ds = (cfg.get("dataset") or "").strip()
+    rel = release.strip() if isinstance(release, str) and release.strip() else None
+    out = dict(adapter=cfg.get("adapter", ""), publisher=pub or None, dataset=ds or None,
+               dataset_id=(f"{pub}:{ds}" if pub and ds else None),
+               release=rel, version_id=None)
+    if out["dataset_id"] and rel:
+        out["version_id"] = version_id(cfg, rel)
+    return out
 
 
 def _header(text: str) -> str:

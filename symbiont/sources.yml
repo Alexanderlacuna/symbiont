@@ -21,6 +21,35 @@
 # REQUIRED PER SOURCE (an unknown key is refused by name):
 #   id            operator-facing name: the key of state/, raw/, runs/ and the run record
 #   adapter       the adapter module that must exist (symbiont/adapters/<adapter>.py, ADAPTER.name)
+#
+# THE THREE LEVELS OF IDENTITY (req-P1-IDENTITY-THREE-LEVELS-adapter-data) — a diary keyed on one
+# string cannot tell 'the previous version of THIS dataset' from 'a DIFFERENT dataset', and
+# release_moved / count_mismatch / 'what did we admit in November' all need that distinction:
+#   (1) ADAPTER          `adapter` (== ADAPTER.name == the key of state/ and of the run record).
+#                        UNCHANGED by this schema, so no adapter, store directory or run record
+#                        breaks when the two levels below are declared.
+#   (2) DATASET          <publisher>:<dataset> — DERIVED by contract.dataset_id(), never hand-typed
+#                        (mgi:MRK_ENSEMBL). STABLE: two releases of this dataset share it, and two
+#                        datasets never do.
+#   (3) SOURCE-VERSION   <dataset_id>:<release> — DERIVED by contract.version_id(), never hand-typed
+#                        (mgi:MRK_ENSEMBL:2026-11-09). This is what a future event writer keys on.
+#   LEVELS 2 AND 3 ARE DECLARED AS TWO OPTIONAL KEYS, validated whenever present:
+#     publisher     WHO publishes the data (ensembl, mgi) — half of the dataset identity
+#     dataset       WHAT is fetched, STABLE across releases (mmusculus_gene_ensembl, MRK_ENSEMBL)
+#   They are OPTIONAL on purpose: a config written before this row (a trial adapter's one-source
+#   config, a store's persisted sources.yml) must still load and run. What is not optional is the
+#   honesty of the id — contract.dataset_id() REFUSES BY NAME on a source that declares neither.
+#   `id` stays the ADAPTER key: it names the directories and the run-record entry, exactly as
+#   before, and is deliberately NOT the dataset identity (a mirror of the same dataset must not
+#   become a different dataset).
+#
+# MIGRATING AN EXISTING STORE — nothing is renamed, no directory moves, no state is rewritten:
+#   the ids are DERIVED from the fields declared above, so a store written before this schema keeps
+#   its state/<id>.json, raw/<id>/<release>/ and runs/<id>/*.json under the same names, and gains
+#   dataset_id/version_id the moment its config declares publisher+dataset (two lines per source).
+#   A source that declares neither still runs, but contract.dataset_id() REFUSES BY NAME rather
+#   than inventing an identity — an identity made up by the reader is the exact ambiguity the three
+#   levels exist to kill (see symbiont/docs/IDENTITY.md).
 #   enabled       true = harvested; false = skipped by name, reason in the run record
 #   base_url      the host+path every RELATIVE endpoint is resolved against — the mirror lever
 #   endpoints     {name: url-or-relative-path}; "." means base_url itself; an absolute http(s)
@@ -40,7 +69,14 @@
 #                 store), and a point-at class with no reason is refused the same way.
 #   rate_limit    {requests_per_minute, min_interval_s} — enforced in symbiont/http.py; the waits
 #                 are slept AND counted in the run record (a limit obeyed silently cannot be audited)
-#   licence_url   the page whose own wording is read and hashed at discovery (T6)
+#   licence_url   the page whose own wording is read and hashed at discovery (T6) — and, when its
+#                 host differs from base_url's, THE ONE HOST THE SANDBOX ALLOWLIST ADDS (row
+#                 req-P1-THE-LICENCE-HOST-IS-IN-THE-ALLOWL): the allowlist is one host per
+#                 DECLARATION, the banner says which is which ('allowlist: github.com (data) ·
+#                 raw.githubusercontent.com (licence page)'), and a licence page SERVED from a host
+#                 this key does not name is REFUSED[licence-host-undeclared] rather than followed.
+#                 Declaring a different host is not a widening: it is naming the host the terms
+#                 live on, which is what makes the terms readable at all.
 #   licence_text  what the terms ARE, recorded with the page's sha256 in the run record
 #   staleness     {policy_days}: a stored release older than this raises the named finding
 #                 SOURCE-STALE, and "stale since <date>" is stamped on the claim (T7)
@@ -57,8 +93,9 @@
 #
 # THIS FILE IS REWRITTEN BY THE LOOP when a source is quarantined — only the `quarantined:` block of
 # the offending source changes, and everything above this line is preserved verbatim. Every key has a
-# fixed order (id, adapter, enabled, note, base_url, endpoints, storage, rate_limit, licence_url,
-# licence_text, staleness, budget, quarantined), so the rewrite is a one-hunk diff, not a reformat.
+# fixed order (id, adapter, publisher, dataset, enabled, note, base_url, endpoints, storage,
+# rate_limit, licence_url, licence_text, staleness, budget, quarantined), so the rewrite is a
+# one-hunk diff, not a reformat.
 #
 # Exit codes of `python3 -m symbiont.loop`: 0 published and verified · 1 a source's count disagreed
 # · 2 refused before the run (config/registry/hard error; also a re-admission refused without its
@@ -70,6 +107,8 @@ version: 1
 sources:
   - id: ensembl_biomart
     adapter: ensembl_biomart
+    publisher: ensembl
+    dataset: mmusculus_gene_ensembl
     enabled: true
     note: "id authority: Ensembl ids + coordinates. The data query and the count query are the SAME request (count=1), built onto base_url by the adapter, so a mirror that serves /biomart/martservice is repointed by changing base_url alone."
     base_url: https://www.ensembl.org/biomart/martservice
@@ -97,6 +136,8 @@ sources:
     quarantined: null
   - id: mgi
     adapter: mgi
+    publisher: mgi
+    dataset: MRK_ENSEMBL
     enabled: true
     note: "xref provider: symbols, MGI accessions, MGI's own Ensembl xrefs, the withdrawn-marker list. Both release files are RELATIVE to base_url, so a mirror of the reports directory is repointed by changing base_url alone. MGI publishes no count endpoint and its release stamp is MRK_ENSEMBL.rpt's own Last-Modified, which is why metadata is that same file."
     base_url: https://www.informatics.jax.org/downloads/reports/

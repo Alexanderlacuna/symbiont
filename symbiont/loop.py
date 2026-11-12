@@ -52,7 +52,7 @@ import sys
 import time
 import urllib.parse
 
-from . import contract, digests, view as view_mod, xref as xref_mod
+from . import contract, digests, events, research, view as view_mod, xref as xref_mod
 from .http import Fetcher, FetchError, GONE_STATUS
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -78,6 +78,19 @@ def jdump(obj, path: str) -> str:
 
 def say(line: str) -> None:
     print(line, flush=True)
+
+
+def _availability(entry: dict) -> str:
+    """One word per registry entry, for the coverage refusal's 'what WAS available' list."""
+    if not entry.get("admitted"):
+        return "not-admitted"
+    if not entry.get("enabled"):
+        return "disabled"
+    if entry.get("quarantined"):
+        return "quarantined"
+    if not entry.get("selected"):
+        return "not-selected"
+    return "usable"
 
 
 def _raw_meta_index(store: str) -> dict:
@@ -259,6 +272,45 @@ def _fetch_recipe(url: str) -> dict:
     return dict(url=url, params=dict(urllib.parse.parse_qsl(q)))
 
 
+def _schema_shape(n, reskeys) -> tuple[str, list[str]]:
+    """THE SHAPE OF WHAT THE ADAPTER EMITTED — the fingerprint a `schema_changed` line names.
+
+    (req-P1-THE-DIARY-HOOKS, the loop's fifth class.) Each adapter parses its own format; what the
+    station can honestly measure WITHOUT guessing at a provider's bytes is the shape of the
+    normalised records it was given: every key path that actually appeared (nested keys included),
+    sorted and hashed. A run whose shape differs from the one recorded in `state/<id>.json` emits
+    `schema_changed` naming both fingerprints and the paths that appeared/vanished.
+
+    The RESOURCES that were read are part of the shape too (`resource:<reskey>`), so a file that
+    appears or disappears in a release moves the fingerprint. And a payload the adapter can no
+    longer parse at ALL (rows_in > 0, every row refused, no record shape) is the loudest shape
+    change there is: the run reports it as one instead of leaving an empty acquisition unexplained.
+
+    HONEST LIMIT, stated in the line's own `why` as well: a column the adapter drops on the floor is
+    not visible here — this fingerprints the CONTRACT's side of the join, not the provider's file.
+    It fires when the emitted shape changes (an adapter that gains/loses a field, a resource that
+    appears or disappears, or a payload that stops parsing), which is the change the loop can prove.
+    """
+    paths: set[str] = set()
+
+    def walk(node, prefix: str) -> None:
+        if isinstance(node, dict):
+            for k in node:
+                walk(node[k], f"{prefix}.{k}" if prefix else str(k))
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, prefix + "[]")
+        else:
+            paths.add(prefix)
+
+    for rec in n.records:
+        walk(rec, "")
+    for reskey in reskeys:
+        paths.add(f"resource:{reskey}")
+    keys = sorted(paths)
+    return sha256("\n".join(keys).encode("utf-8")), keys
+
+
 def harvest_source(sid: str, cfg: dict, ad, fetcher: Fetcher, store: str, since_mode: str,
                    replay: dict, run_id: str, src: dict):
     """discover -> staleness -> fetch(since) -> snapshot -> normalise -> verify, for ONE source.
@@ -274,13 +326,26 @@ def harvest_source(sid: str, cfg: dict, ad, fetcher: Fetcher, store: str, since_
     since = {}
     if since_mode != "none" and os.path.exists(state_path):
         since = json.load(open(state_path, encoding="utf-8"))
+    # WHAT WE ALREADY HELD, before this run overwrites the state file: the release and the shape
+    # the LAST run stored. The caller emits `release_moved` / `schema_changed` by comparing these
+    # with what this run measured — read here, because here is where `since` is the last run's.
+    src["prior"] = dict(release=since.get("release"), run_id=since.get("run_id"),
+                        schema_sha256=since.get("schema_sha256"),
+                        schema_keys=list(since.get("schema_keys") or []))
     d = ad.discover(fetcher, since)
+    # THE THREE LEVELS, in the run record (req-P1-IDENTITY-THREE-LEVELS-adapter-data): level 1 the
+    # adapter name, level 2 the dataset id derived from sources.yml, level 3 the version this run
+    # actually fetched. All three are derived HERE, so no writer can spell them differently.
+    src["identity"] = contract.identity(cfg, d.release)
     src["discover"] = dict(release=d.release, published_count=d.published_count,
+                           dataset_id=src["identity"]["dataset_id"],
+                           version_id=src["identity"]["version_id"],
                            published_count_url=d.published_count_url,
                            resources=[{k: r[k] for k in ("reskey", "url", "etag", "last_modified",
                                                          "content_length")} for r in d.resources],
                            licence=d.licence, notes=d.notes)
-    say(f"DISCOVER {sid}  release={d.release}  source_count={d.published_count}  "
+    say(f"DISCOVER {sid}  release={d.release}  version_id={src['identity']['version_id']}  "
+        f"source_count={d.published_count}  "
         f"resources={len(d.resources)}  licence={d.licence.get('name', '?')}")
 
     # 1b staleness — OUR stored release vs the upstream metadata endpoint (T7)
@@ -410,6 +475,9 @@ def harvest_source(sid: str, cfg: dict, ad, fetcher: Fetcher, store: str, since_
     errs = contract.check_accounting(n)
     if errs:
         raise RuntimeError(f"{sid}: rows unaccounted for: {errs}")
+    shape_sha, shape_keys = _schema_shape(n, sorted(resources))
+    src["schema"] = dict(sha256=shape_sha, keys=shape_keys, records=len(n.records),
+                         rows_in=n.rows_in)
     by_reason: dict[str, int] = {}
     for r in n.rejects:
         by_reason[r["reason"]] = by_reason.get(r["reason"], 0) + 1
@@ -441,6 +509,8 @@ def harvest_source(sid: str, cfg: dict, ad, fetcher: Fetcher, store: str, since_
                      release_at=(prior_at if same else now.isoformat()),
                      updated_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                      snapshots=snaps, licence=d.licence,
+                     # the shape of what this run normalised: the NEXT run compares against it
+                     schema_sha256=shape_sha, schema_keys=shape_keys,
                      etags={r["reskey"]: r.get("etag", "") for r in d.resources})
         jdump(state, state_path)
     return n
@@ -650,7 +720,8 @@ def _rebuild_from_raw(a) -> int:
         for sid in sorted(sources):
             cfg = sources[sid]
             src = record["sources"][sid] = dict(id=sid, adapter=cfg["adapter"], enabled=cfg["enabled"],
-                                                quarantined=cfg["quarantined"])
+                                                quarantined=cfg["quarantined"],
+                                                identity=contract.identity(cfg))
             if only and sid not in only:
                 src["skipped"] = dict(reason="not-selected", detail=f"--sources did not select {sid}")
                 continue
@@ -683,6 +754,9 @@ def _rebuild_from_raw(a) -> int:
             if not snaps:
                 return refuse(f"state/{sid}.json records no snapshots — nothing in raw/ is named current")
             src["release"] = state.get("release", "")
+            # a rebuild never fetches, so the version it materialises is the release the state file
+            # names current — DERIVED from the same helpers the fetch path used, never re-spelt
+            src["identity"] = contract.identity(cfg, src["release"])
             src["published_count"] = state.get("published_count")
             src["licence"] = state.get("licence")
             src["snapshots"] = {k: dict(v) for k, v in sorted(snaps.items())}   # as recorded
@@ -820,6 +894,9 @@ def _rebuild_from_raw(a) -> int:
                    generated_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                    rebuilt_from_raw=True, findings=[], skipped=record["skipped"],
                    sources={k: dict(release=record["sources"][k]["release"],
+                                    adapter=record["sources"][k]["identity"]["adapter"],
+                                    dataset_id=record["sources"][k]["identity"]["dataset_id"],
+                                    version_id=record["sources"][k]["identity"]["version_id"],
                                     snapshots=record["sources"][k]["snapshots"],
                                     published_count=record["sources"][k].get("published_count"),
                                     url=[v.get("url", "") for v in
@@ -861,7 +938,8 @@ def _rebuild_from_raw(a) -> int:
 
 # ---------------------------------------------------------------- the loop
 def run(store: str, question: str, since_mode: str, only: list[str] | None,
-        replay: dict, run_id: str | None, sources_path: str | None = None) -> dict:
+        replay: dict, run_id: str | None, sources_path: str | None = None,
+        spec_path: str | None = None) -> dict:
     t0 = time.time()
     run_id = run_id or utc_stamp()
     for sub in ("raw", "state", "xref", "view", "runs", "rejects", "digest"):
@@ -876,6 +954,7 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
         run_id=run_id, question=question, started_at=dt.datetime.now(dt.timezone.utc).isoformat(),
         since=since_mode, replay=sorted(replay), sources_path=os.path.abspath(sources_path),
         sources={}, skipped={}, findings=[], refusals=[], xref={}, publish={}, status="",
+        research={}, coverage={},
     )
     say(f"HARVEST run {run_id}  question: {question}")
     say(f"SOURCES  {len(sources)} defined in {os.path.abspath(sources_path)}; "
@@ -906,10 +985,145 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
         record["sources"][sid]["refused"] = rec
         return rec
 
+    def finish(status: str, note: str) -> dict:
+        record["status"] = status
+        record["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        record["cost"] = dict(requests=len(log), requests_by_method=_by_method(log),
+                              bytes_in=bytes_in, rate_limit_wait_s=round(sum(waits), 3),
+                              wall_seconds=round(time.time() - t0, 1),
+                              data_bytes=sum(s.get("bytes", 0) for src in record["sources"].values()
+                                             for s in src.get("fetch", {}).get("resources", {}).values()),
+                              rows_in=sum(s.get("normalise", {}).get("rows_in", 0)
+                                          for s in record["sources"].values()),
+                              rows_records=sum(s.get("normalise", {}).get("records", 0)
+                                               for s in record["sources"].values()),
+                              rows_rejected=sum(s.get("normalise", {}).get("rejects", 0)
+                                                for s in record["sources"].values()),
+                              rows_published=(record.get("publish") or {}).get("rows", 0),
+                              log=log)
+        rdir = os.path.join(store, "runs")
+        # THE FOUR DIGESTS (req-P1-THE-FOUR-DIGESTS, docs/DIGESTS.md): the digest section is
+        # measured and pinned BEFORE the record is dumped, so the per-run digest blocks can
+        # reproduce every count from immutable run records; then the digests themselves are
+        # written — a run that cannot write its digest is a run that refuses, never a quiet one.
+        record["digest"] = digests.collect(store, record)
+        # THE ANCHOR (req-P1-THE-DIARY-appended-by-the-code-nev): the diary's head at the moment
+        # this run finished, written into the RUN RECORD. The hash chain inside the diary only
+        # makes an alteration visible; a whole-file rewrite can recompute every link. Anchoring the
+        # head in a record other artefacts quote (the manifest repeats and re-checks it) means a
+        # rewrite must also rewrite this run record — that is the price the docstring states.
+        record["diary"] = dict(events.head_of(store), anchored_in=f"runs/{run_id}.json")
+        rec_path = jdump(record, os.path.join(rdir, f"{run_id}.json"))
+        dg_paths = digests.write(store, record)
+        say("DIGESTS  " + " ".join(os.path.relpath(p, store) for p in dg_paths))
+        say(f"COST     requests={record['cost']['requests']} bytes_in={record['cost']['bytes_in']} "
+            f"data_bytes={record['cost']['data_bytes']} wall={record['cost']['wall_seconds']}s "
+            f"rate_limit_wait={record['cost']['rate_limit_wait_s']}s "
+            f"rows_in={record['cost']['rows_in']} rows_out={record['cost']['rows_published']} "
+            f"rejects={record['cost']['rows_rejected']}")
+        say(f"RUN-RECORD {os.path.relpath(rec_path, store)}")
+        dg = record["diary"]
+        say(f"DIARY    head seq={dg['seq']} sha256={dg['head_sha256']} ({dg['events']} event(s), "
+            f"anchored in {dg['anchored_in']}"
+            + ("; TRUNCATED — see `python3 -m symbiont.registry verify`" if dg["truncated"] else "")
+            + ")")
+        for f in record["findings"]:
+            say(f"FINDING  {f}")
+        for r in record["refusals"]:
+            say(f"REFUSAL  [{r['code']}] {r.get('source', '')}: {r['detail']}")
+        say(note)
+        return record
+
+    def diary_emit(cfg: dict, event_class: str, *, why: str, release=None, evidence=None) -> bool:
+        """THE EMISSION HOOK — the event is written at the moment the state changed.
+
+        (req-P1-THE-DIARY-appended-by-the-code-nev, deliverable 4.) If the diary REFUSES (an
+        illegal transition, a truncated tail), the state change does not count: the run refuses,
+        publishes nothing, and the reason is in the run record. A transition that happened without
+        an event is the exact failure this hook exists to prevent."""
+        nonlocal refused
+        try:
+            events.emit(store, cfg, event_class, why=why, release=release, evidence=evidence)
+            return True
+        except events.DiaryRefused as e:
+            refused = True
+            rec = dict(code=e.code, source=cfg.get("id", ""), detail=str(e))
+            record["refusals"].append(rec)
+            record["sources"].setdefault(cfg.get("id", ""), {})["refused"] = rec
+            say(f"REFUSED[{e.code}] {cfg.get('id', '?')}: {e}")
+            return False
+
+    # ── THE DIARY, READ BEFORE ANYTHING IS SPENT (req-P1-THE-DIARY-appended-by-the-code-nev) ──
+    # A truncated or altered tail is DETECTED and REPORTED here — never skipped — and the run
+    # refuses: history that cannot be stated cannot be extended, and a source's permission to be
+    # fetched lives in this file (an `admitted` event), not only in sources.yml's `enabled`.
+    diary = events.read(store)
+    if diary.problems:
+        say(diary.report())
+        rec = dict(code="truncated-diary", source="", detail=diary.report())
+        record["refusals"].append(rec)
+        return finish("REFUSED",
+                      f"REFUSED  run {run_id}: the diary {events.diary_path(store)} is damaged — "
+                      f"nothing was fetched, nothing appended, nothing published; repair or "
+                      f"restore the diary and re-run")
+
+    # ── THE RESEARCH SPEC, PART 1: WHAT THIS INVESTIGATION REQUIRES, HASHED, AND THE COVERAGE 
+    # GATE BEFORE ANYTHING IS SPENT ───────────────────────────────────────────────────────────
+    # (req-P1-THE-RESEARCH-SPEC-what-a-question-req). The SPEC carries the requirements and is
+    # hashed — its sha256 is the investigation's identity. The RELEASE PINS live in THIS run record,
+    # resolved at run time below, so the same spec re-run against a newer release is the SAME
+    # investigation, and a changed spec is a NEW one (its sha changes). A malformed spec refuses
+    # here, before a request leaves the box.
+    spec = None
+    if spec_path:
+        spec = research.load_spec(spec_path)          # REFUSED[spec] by name on any malformed field
+        record["research"] = dict(
+            research_id=spec["research_id"], spec_path=os.path.abspath(spec_path),
+            spec_sha256=research.spec_sha256(spec),
+            canonical=research.canonical_bytes(spec).decode("utf-8"),
+            selection=research.selection(spec),
+            note=("the SPEC carries requirements; THIS record carries the release pins resolved at "
+                  "run time (sources.*.discover.release / sources.*.identity.version_id), so the "
+                  "same spec re-run against a newer release is the same investigation"))
+        say(f"RESEARCH {spec['research_id']}  spec_sha256={record['research']['spec_sha256']}  "
+            f"required={spec['required_datasets']}  optional={spec['optional_datasets']}")
+
+        # ── COVERAGE REFUSAL, BEFORE SPENDING ─────────────────────────────────────────────────
+        # A required dataset that is not admitted+enabled means THIS question cannot be answered by
+        # THIS run. Acquiring the rest anyway would produce a plausible result that does not reveal
+        # the shortfall — so nothing at all is acquired, and what WAS available is listed by name.
+        cov = research.coverage(spec, sources, only=only, spec_path=spec_path)
+        missing = cov["missing_by_class"]["required"]
+        if missing:
+            record["coverage"] = cov
+            detail = (f"{spec['research_id']} (spec_sha256={cov['spec_sha256']}) requires "
+                      f"{len(spec['required_datasets'])} dataset(s); {len(missing)} is not "
+                      f"admitted+enabled: {missing}. available now: "
+                      f"{[(e['source'], e['dataset'], _availability(e)) for e in cov['available']]}. "
+                      f"reasons: "
+                      + "; ".join(f"{k}: {v['reason']}" for k, v in cov["missing_detail"].items()))
+            record["refusals"].append(
+                dict(code="missing-dataset", source="", spec=spec["research_id"],
+                     spec_sha256=cov["spec_sha256"], dataset=missing,
+                     available=[e["source"] for e in cov["available"]],
+                     missing_by_class=cov["missing_by_class"], detail=detail))
+            record["coverage"]["finding"] = research.coverage_finding(cov)
+            say(f"REFUSED[missing-dataset] {detail}")
+            say("ACQUISITION NOT STARTED  requests=0  nothing fetched  nothing snapshotted  "
+                "no view published — a silent downgrade to fewer datasets is forbidden")
+            return finish("REFUSED",
+                          f"REFUSED  run {run_id}: required dataset(s) {missing} missing for spec "
+                          f"{spec['research_id']} — ACQUISITION NOT STARTED (0 requests)")
+        say(f"COVERAGE pre-flight OK  required={len(cov['required'])}  "
+            f"optional_missing={cov['missing_by_class']['optional'] or 'none'}")
+
     for sid in sorted(sources):
         cfg = sources[sid]
         src = record["sources"][sid] = dict(id=sid, adapter=cfg["adapter"], enabled=cfg["enabled"],
-                                            quarantined=cfg["quarantined"])
+                                            quarantined=cfg["quarantined"],
+                                            # level 1 + level 2 before anything is fetched;
+                                            # level 3 is added by harvest_source at discover
+                                            identity=contract.identity(cfg))
 
         # -- the three ways a configured source does not run today --
         if only and sid not in only:
@@ -935,6 +1149,29 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
             src["cost"] = dict(requests=0, bytes_in=0, wall_s=0.0, rate_limit_waits=[])
             record["skipped"][sid] = src["skipped"]
             say(f"SKIP     {sid}  {line}")
+            continue
+
+        # ── THE DOOR: `enabled` is a PERMISSION, `admitted` is a DECISION ──────────────────────
+        # (req-P1-THE-DIARY-appended-by-the-code-nev, THE PERMISSION TEST). sources.yml says we MAY
+        # fetch; the diary says SOMEBODY ADMITTED IT (or authorised one scoped exception). A source
+        # switched on with no such fact is REFUSED BY NAME here — before one request leaves the
+        # box — and the two ways to fix it are printed.
+        source_id, identity_how = events.dataset_of(cfg)
+        src["dataset_id"] = source_id
+        allowed, why_not, permit = events.permission(diary, source_id)
+        if not allowed:
+            refused = True
+            detail = (f"{sid} ({source_id}): sources.yml says enabled: true, but {why_not}. "
+                      f"Two ways to fix it: (1) evaluate it and admit it — python3 -m "
+                      f"symbiont.admission evaluate {sid} … then python3 -m symbiont.admission "
+                      f"admit {sid} --gate \"<the owner's line>\"; or (2) record a scoped "
+                      f"exception — python3 -m symbiont.registry override {source_id} --why "
+                      f"\"<why>\" --scope one-run|until:<YYYY-MM-DD>. Nothing was fetched.")
+            rec = dict(code="not-admitted", source=sid, dataset_id=source_id, detail=detail)
+            record["refusals"].append(rec)
+            src["refused"] = rec
+            src["cost"] = dict(requests=0, bytes_in=0, wall_s=0.0, rate_limit_waits=[])
+            say(f"REFUSED[not-admitted] {detail}")
             continue
 
         ad = adapters[cfg["adapter"]]
@@ -976,7 +1213,78 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
             say(f"REFUSED[{code}] {sid}: {e}")
         else:
             v = src.get("verify") or {}
-            if not v.get("ok", True):
+            release = (src.get("discover") or {}).get("release")
+            snaps = {k: (s.get("sha256") or s.get("payload_sha256") or "")
+                     for k, s in (src.get("snapshots") or {}).items()}
+            fetched_new = bool((src.get("fetch") or {}).get("new"))
+            if fetched_new:
+                # ACQUIRED is recorded even when the count then DISAGREES: the bytes really were
+                # fetched and stored (the loop snapshots before it verifies), and a diary that hid
+                # that would leave data in raw/ with no fact explaining it.
+                diary_emit(cfg, "acquired", release=release,
+                           why=(f"run {run_id} fetched {len(snaps)} resource(s) at release "
+                                f"{release} and stored them content-addressed"
+                                + ("; the count then agreed" if v.get("ok", True)
+                                   else "; the count then DISAGREED")),
+                           evidence=dict(run_id=run_id, release=release, resources=snaps,
+                                         rows=(src.get("normalise") or {}).get("records"),
+                                         requests=(src.get("cost") or {}).get("requests"),
+                                         new=fetched_new))
+            # ── THE TWO FACTS ABOUT THE BYTES (req-P1-THE-DIARY-HOOKS: the loop's five) ───────
+            # `acquired` says bytes landed; these say the bytes are DIFFERENT from the ones already
+            # held — a moved release, or a different shape out of the adapter. Emitted AFTER
+            # `acquired` on purpose: `acquired` is legal from every state a permitting source can
+            # be in, so the closed table is OBEYED here rather than argued with (a `release_moved`
+            # first would be refused after a `count_mismatch`, turning an ordinary release move
+            # into a refused run). A replay run substitutes bytes under a fixed state and updates
+            # no state file, so it emits neither.
+            prior = src.get("prior") or {}
+            sch = src.get("schema") or {}
+            if fetched_new and not replay and prior.get("release") \
+                    and str(prior["release"]) != str(release):
+                diary_emit(cfg, "release_moved", release=release,
+                           why=(f"run {run_id}: {source_id} moved from release "
+                                f"{prior['release']} (first observed in run "
+                                f"{prior.get('run_id') or '(unrecorded)'}) to {release} — the new "
+                                f"bytes are stored content-addressed and the previous release is "
+                                f"left in raw/ untouched"),
+                           evidence=dict(run_id=run_id, from_release=prior["release"],
+                                         to_release=release, prior_run_id=prior.get("run_id"),
+                                         resources=snaps,
+                                         prior_release_at=(src.get("stale") or {}).get(
+                                             "release_at")))
+            prev_shape = str(prior.get("schema_sha256") or "")
+            if (fetched_new and not replay and prev_shape and prior.get("schema_keys")
+                    and int(sch.get("rows_in") or 0) > 0
+                    and prev_shape != str(sch.get("sha256") or "")):
+                added = sorted(set(sch["keys"]) - set(prior["schema_keys"]))
+                gone = sorted(set(prior["schema_keys"]) - set(sch["keys"]))
+                diary_emit(cfg, "schema_changed", release=release,
+                           why=(f"run {run_id}: the shape {source_id} normalises changed — key "
+                                f"path(s) appeared {added or 'none'} and vanished {gone or 'none'} "
+                                f"(fingerprint {prev_shape[:16]}… -> "
+                                f"{str(sch.get('sha256'))[:16]}…). This fingerprints what the "
+                                f"ADAPTER emitted, not the provider's own columns: a column the "
+                                f"adapter drops is not visible to it"),
+                           evidence=dict(run_id=run_id, from_schema_sha256=prev_shape,
+                                         to_schema_sha256=sch.get("sha256"),
+                                         keys_added=added, keys_removed=gone,
+                                         keys=sch["keys"], records=sch.get("records"),
+                                         release=release))
+            if v.get("ok", True):
+                diary_emit(cfg, "count_ok", release=release,
+                           why=(f"run {run_id}: our count {v.get('ours')} equals the source's own "
+                                f"count {v.get('source_count')} at {v.get('url')}"),
+                           evidence=dict(run_id=run_id, ours=v.get("ours"),
+                                         source_count=v.get("source_count"), url=v.get("url"),
+                                         release=release))
+            else:
+                diary_emit(cfg, "count_mismatch", release=release,
+                           why=(f"run {run_id}: our count {v.get('ours')} does NOT match the "
+                                f"source's own count {v.get('source_count')} at {v.get('url')}"),
+                           evidence=dict(run_id=run_id, ours=v.get("ours"),
+                                         source_count=v.get("source_count"), url=v.get("url"),
+                                         release=release))
                 priors = _prior_run_failures(store, sid, "count-check", record["started_at"])
                 if priors:
                     # T9 loop side: the count check has now disagreed TWICE in a row — the source
@@ -986,6 +1294,19 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
                                     f"at {v.get('url')}",
                                "count-mismatch", [priors[-1], run_id])
                     refused = True
+            # A ONE-RUN override is CONSUMED by the acquisition it authorised — after the fact it
+            # authorised is recorded: the scope said one run, so the diary says when that run
+            # happened (DESIGN §5: an override carries a scope, and a scope that never expires is
+            # a policy change wearing a flag).
+            if (permit and permit.get("class") == "manual_override"
+                    and str((permit.get("evidence") or {}).get("scope") or "") == "one-run"
+                    and fetched_new):
+                diary_emit(cfg, "override_expired", release=release,
+                           why=(f"run {run_id} consumed the one-run manual_override recorded at "
+                                f"seq {permit.get('seq')} — the exception authorised ONE "
+                                f"acquisition and it has now happened"),
+                           evidence=dict(run_id=run_id, override_seq=permit.get("seq"),
+                                         scope="one-run"))
         finally:
             src["cost"] = dict(requests=len(fetcher.log), bytes_in=fetcher.bytes_in,
                                wall_s=fetcher.wall_seconds, rate_limit_waits=fetcher.waits)
@@ -996,43 +1317,20 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
     record["findings"] = [s["stale"]["finding"] for s in record["sources"].values()
                           if (s.get("stale") or {}).get("finding")]
 
-    def finish(status: str, note: str) -> dict:
-        record["status"] = status
-        record["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        record["cost"] = dict(requests=len(log), requests_by_method=_by_method(log),
-                              bytes_in=bytes_in, rate_limit_wait_s=round(sum(waits), 3),
-                              wall_seconds=round(time.time() - t0, 1),
-                              data_bytes=sum(s.get("bytes", 0) for src in record["sources"].values()
-                                             for s in src.get("fetch", {}).get("resources", {}).values()),
-                              rows_in=sum(s.get("normalise", {}).get("rows_in", 0)
-                                          for s in record["sources"].values()),
-                              rows_records=sum(s.get("normalise", {}).get("records", 0)
-                                               for s in record["sources"].values()),
-                              rows_rejected=sum(s.get("normalise", {}).get("rejects", 0)
-                                                for s in record["sources"].values()),
-                              rows_published=(record.get("publish") or {}).get("rows", 0),
-                              log=log)
-        rdir = os.path.join(store, "runs")
-        # THE FOUR DIGESTS (req-P1-THE-FOUR-DIGESTS, docs/DIGESTS.md): the digest section is
-        # measured and pinned BEFORE the record is dumped, so the per-run digest blocks can
-        # reproduce every count from immutable run records; then the digests themselves are
-        # written — a run that cannot write its digest is a run that refuses, never a quiet one.
-        record["digest"] = digests.collect(store, record)
-        rec_path = jdump(record, os.path.join(rdir, f"{run_id}.json"))
-        dg_paths = digests.write(store, record)
-        say("DIGESTS  " + " ".join(os.path.relpath(p, store) for p in dg_paths))
-        say(f"COST     requests={record['cost']['requests']} bytes_in={record['cost']['bytes_in']} "
-            f"data_bytes={record['cost']['data_bytes']} wall={record['cost']['wall_seconds']}s "
-            f"rate_limit_wait={record['cost']['rate_limit_wait_s']}s "
-            f"rows_in={record['cost']['rows_in']} rows_out={record['cost']['rows_published']} "
-            f"rejects={record['cost']['rows_rejected']}")
-        say(f"RUN-RECORD {os.path.relpath(rec_path, store)}")
-        for f in record["findings"]:
-            say(f"FINDING  {f}")
-        for r in record["refusals"]:
-            say(f"REFUSAL  [{r['code']}] {r.get('source', '')}: {r['detail']}")
-        say(note)
-        return record
+    # ── THE RESEARCH SPEC, PART 2: COVERAGE AS MEASURED (the run record's block, and the finding)
+    # What was ACQUIRED (with the release THIS run resolved), what is MISSING, and whether that is
+    # allowed. An optional-and-missing dataset is permitted — but it downgrades `complete` to false,
+    # names itself in missing[], and travels as a FINDING, so the shortfall cannot be read past.
+    if spec is not None:
+        record["coverage"] = research.coverage(spec, sources, only=only, record=record,
+                                               store=store, spec_path=spec_path)
+        record["coverage"]["finding"] = research.coverage_finding(record["coverage"])
+        if record["coverage"]["status"] != "complete":
+            record["findings"].append(record["coverage"]["finding"])
+        say(f"COVERAGE {record['coverage']['status']}  complete={record['coverage']['complete']}  "
+            f"acquired={[a['dataset'] for a in record['coverage']['acquired']]}  "
+            f"missing={record['coverage']['missing'] or 'none'}")
+
 
     if refused:
         # A refused source leaves the claim incomplete. Publishing a view with a hole in it would
@@ -1078,6 +1376,12 @@ def run(store: str, question: str, since_mode: str, only: list[str] | None,
                generated_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                findings=record["findings"], skipped=record["skipped"],
                sources={k: dict(release=r_["discover"]["release"],
+                                # THE THREE LEVELS travel with the provenance, so a row's version is
+                                # never ambiguous: which adapter wrote it, which DATASET it is
+                                # (stable across releases) and WHICH RELEASE of it (derived).
+                                adapter=r_["identity"]["adapter"],
+                                dataset_id=r_["identity"]["dataset_id"],
+                                version_id=r_["identity"]["version_id"],
                                 snapshots=r_.get("snapshots", {}),
                                 published_count=r_["discover"]["published_count"],
                                 url=[q["url"] for q in r_["discover"]["resources"]],
@@ -1179,6 +1483,11 @@ def main(argv=None) -> int:
     ap.add_argument("--sources", default="", help="comma list of source ids from sources.yml, default all")
     ap.add_argument("--sources-config", default=contract.DEFAULT_SOURCES,
                     help="path to sources.yml (the one definition site per source)")
+    ap.add_argument("--research", default="", metavar="SPEC.yml",
+                    help="the RESEARCH SPEC this run must fulfil (symbiont/research/<id>.yml): its "
+                         "spec_sha256 names the investigation, a missing REQUIRED dataset refuses "
+                         "the run before anything is fetched, and a missing OPTIONAL one is allowed "
+                         "but named in the manifest's coverage block")
     ap.add_argument("--replay-raw", action="append", default=[],
                     metavar="SOURCE:RESKEY=PATH", help="normalise from a substituted snapshot (corruption tests)")
     ap.add_argument("--run-id", default=None)
@@ -1209,7 +1518,7 @@ def main(argv=None) -> int:
     try:
         rec = run(a.store, a.question, a.since,
                   [s for s in a.sources.split(",") if s] or None, replay, a.run_id,
-                  sources_path=a.sources_config)
+                  sources_path=a.sources_config, spec_path=(a.research or None))
     except contract.ConfigError as e:
         say(f"REFUSED[{e.code}] {e}")
         return 2

@@ -64,7 +64,7 @@ import re
 import shutil
 import sys
 
-from . import admission_policy, contract, sandbox
+from . import admission_policy, contract, events, sandbox
 from .http import Fetcher, FetchError
 from . import loop as loop_mod
 
@@ -319,7 +319,7 @@ class DraftAdapter:
         except Exception as e:
             notes.append(f"metadata HEAD refused ({type(e).__name__}); release stays {release}")
         try:
-            txt = http.get_text(self.licence_url, note="draft licence page")
+            txt = http.get_text(self.licence_url, note="licence")
         except contract.Refusal:
             raise                       # a budget refusal is a budget refusal, not unreadable terms
         except Exception as e:
@@ -505,10 +505,13 @@ def cmd_draft(a) -> int:
 def _sandbox_plan(a, sid: str, cand: dict, ev: dict):
     """The draft's run config + its NETWORK ALLOWLIST, built from the entry the card will write.
 
-    The network allowlist is the entry's base_url and nothing else (DESIGN-STATION §4b). An
-    endpoint that points at another host is not silently added: the sandbox refuses, because a
-    sandboxed run whose allowlist is the union of everything the entry mentions has no allowlist
-    at all — widening it is an operator edit to sources.yml, not a default."""
+    The allowlist is the entry's DECLARATIONS, one host each (DESIGN-STATION §4b, and
+    req-P1-THE-LICENCE-HOST-IS-IN-THE-ALLOWL): the `base_url` host for the data, plus the
+    `licence_url` host when that page lives somewhere else — an explicitly justified second
+    door, because a station that cannot read the terms can never admit the source (measured
+    2026-11-12 on MONDO). An ENDPOINT on another host is still not added: the sandbox refuses,
+    because a sandboxed run whose allowlist is the union of everything the entry mentions has no
+    allowlist at all — that is an operator edit to sources.yml, not a default."""
     budget = dict(SANDBOX_DEFAULT_BUDGET)
     if a.budget_requests:
         budget["requests"] = a.budget_requests
@@ -559,9 +562,9 @@ def cmd_sandbox(a) -> int:
     cfg, budget, rate, allowed_hosts, foreign = _sandbox_plan(a, sid, cand, ev)
     if foreign:
         print(f"REFUSED[sandbox-breach] {sid}: its sources.yml entry would reach "
-              f"{', '.join(sorted(set(foreign)))} but its network allowlist is its own base_url "
-              f"({', '.join(sorted(allowed_hosts))}) — widening a network allowlist is an "
-              f"operator edit, never a sandbox default")
+              f"{', '.join(sorted(set(foreign)))} but its network allowlist is the hosts it "
+              f"declares ({sandbox.allowlist_banner(cfg)[len('allowlist: '):]}) — widening a "
+              f"network allowlist is an operator edit, never a sandbox default")
         return 3
     if not allowed_hosts:
         print(f"REFUSED[sandbox-breach] {sid}: the entry's base_url {cand['url']!r} names no host, "
@@ -590,7 +593,7 @@ def _sandbox_confined(a, sid: str, cfg: dict, budget: dict, allowed_hosts: set) 
              "--budget-wall-s", str(budget["wall_s"])]
     print(f"SANDBOX   {sid}  into throwaway store {store}")
     print(f"  budget requests={budget['requests']} bytes={budget['bytes']} wall_s={budget['wall_s']}")
-    print(f"  network allowlist: {', '.join(sorted(allowed_hosts))} (the entry's base_url only)")
+    print(f"  {sandbox.allowlist_banner(cfg)}")
     try:
         rec = sandbox.run(inner, class_name="adapter", row_paths=[store], cwd=sandbox.FARM,
                           label=f"sandbox-{sid}", capture_stdout=True,
@@ -644,6 +647,35 @@ def _sandbox_receipt(store: str, receipt: dict) -> str:
     return _jdump(receipt, os.path.join(store, "receipt.json"))
 
 
+def _name_licence_host(e, sid: str, cfg: dict, refusals: list) -> tuple[str, str]:
+    """(code, detail) for a contract refusal raised by the harvest — same words, except ONE case.
+
+    req-P1-THE-LICENCE-HOST-IS-IN-THE-ALLOWL deliverable 3: a licence page SERVED from a host no
+    declaration names (a CDN in front of the page, an alias, a redirect to another site) is
+    REFUSED BY NAME — REFUSED[licence-host-undeclared] — naming that host. Before this, the
+    network guard refused the connect and the draft adapter reported it as `licence-unknown`, so
+    the operator saw a dead end ('terms unreadable') instead of the one thing to fix (declare the
+    host, or point licence_url at it). The host is taken from the guard's own refusal record and
+    must also be named by the refusal text, so a metadata redirect that merely shares the
+    message is never mistaken for the licence page."""
+    code = str(getattr(e, "code", ""))
+    text = str(e)
+    if code != "licence-unknown":
+        return code, text
+    declared = [h for h, _ in sandbox.allowlist_declarations(cfg)]
+    third = [r.get("host") for r in refusals
+             if r.get("host") and r.get("host") not in declared and r.get("host") in text]
+    if not third:
+        return code, text
+    hosts = ", ".join(sorted(set(third)))
+    return "licence-host-undeclared", (
+        f"the licence page is served from {hosts}, a host this entry does not declare (its "
+        f"declarations: {', '.join(declared) or 'none'}) — the allowlist will not follow the "
+        f"terms onto a host nobody named, so the source is refused rather than admitted under "
+        f"terms it is forbidden to read. Declare licence_url on {hosts} (one host per "
+        f"declaration) if that is really where the terms live. [{text}]")
+
+
 def _sandbox_inside(a, sid: str, cfg: dict, budget: dict, rate: dict,
                     allowed_hosts: set) -> int:
     """The confined half: harvest with the network allowlist armed, into the throwaway store."""
@@ -656,7 +688,7 @@ def _sandbox_inside(a, sid: str, cfg: dict, budget: dict, rate: dict,
     src: dict = {}
     refusals: list = []
     n = None
-    print(f"  allowlist armed: {', '.join(sorted(allowed_hosts))}")
+    print(f"  allowlist armed: {sandbox.allowlist_banner(cfg)[len('allowlist: '):]}")
     try:
         with sandbox.network_guard(allowed_hosts, refusals):
             n = loop_mod.harvest_source(sid, cfg, ad, fetcher, store, "none", {},
@@ -667,27 +699,37 @@ def _sandbox_inside(a, sid: str, cfg: dict, budget: dict, rate: dict,
         _sandbox_receipt(store, dict(run_id=f"sandbox-{ts}", id=sid, at=_utc().isoformat(),
                                      refused=dict(code="sandbox-breach", host=e.host,
                                                   detail=str(e)),
+                                     allowlist=sandbox.allowlist_banner(cfg),
+                                     licence_host=sandbox.licence_host_of(cfg),
                                      network_refusals=refusals,
                                      network_allowlist=sorted(allowed_hosts),
+                                     requests=list(fetcher.log),
                                      cost=dict(requests=len(fetcher.log),
                                                bytes_in=fetcher.bytes_in)))
         return 3
     except contract.Refusal as e:
         cost = dict(requests=len(fetcher.log), bytes_in=fetcher.bytes_in,
                     wall_s=fetcher.wall_seconds, rate_limit_waits=fetcher.waits)
+        code, detail = _name_licence_host(e, sid, cfg, refusals)
         _sandbox_receipt(store, dict(run_id=f"sandbox-{ts}", id=sid, at=_utc().isoformat(),
-                                     refused=dict(code=e.code, detail=str(e)), cost=cost,
+                                     refused=dict(code=code, detail=detail), cost=cost,
+                                     allowlist=sandbox.allowlist_banner(cfg),
+                                     licence_host=sandbox.licence_host_of(cfg),
                                      network_refusals=refusals,
-                                     network_allowlist=sorted(allowed_hosts)))
-        print(f"REFUSED[{e.code}] {sid}: {e}")
+                                     network_allowlist=sorted(allowed_hosts),
+                                     requests=list(fetcher.log)))
+        print(f"REFUSED[{code}] {sid}: {detail}")
         print(f"  the throwaway store holds what landed before the refusal: {store}")
         return 3
     except FetchError as e:
         code = "source-gone" if getattr(e, "status", 0) in (404, 410) else "source-unreachable"
         _sandbox_receipt(store, dict(run_id=f"sandbox-{ts}", id=sid, at=_utc().isoformat(),
                                      refused=dict(code=code, detail=str(e)),
+                                     allowlist=sandbox.allowlist_banner(cfg),
+                                     licence_host=sandbox.licence_host_of(cfg),
                                      network_refusals=refusals,
-                                     network_allowlist=sorted(allowed_hosts)))
+                                     network_allowlist=sorted(allowed_hosts),
+                                     requests=list(fetcher.log)))
         print(f"REFUSED[{code}] {sid}: {e}")
         print(f"  the throwaway store holds what landed before the refusal: {store}")
         return 3
@@ -709,6 +751,9 @@ def _sandbox_inside(a, sid: str, cfg: dict, budget: dict, rate: dict,
         xref_rate=xref_rate, sample_rows=sample,
         release=(src.get("discover") or {}).get("release"),
         licence=(src.get("discover") or {}).get("licence"),
+        licence_host=sandbox.licence_host_of(cfg),
+        allowlist=sandbox.allowlist_banner(cfg),
+        requests=list(fetcher.log),
         network_refusals=refusals, network_allowlist=sorted(allowed_hosts),
         refusal=None,
     )
@@ -937,6 +982,39 @@ def cmd_admit(a) -> int:
         shutil.rmtree(moved_dir, ignore_errors=True)
         return _refuse("registry", f"{sid}: admitting it would leave config and code in "
                                    f"disagreement — REFUSED, nothing written: {e}")
+
+    # ── THE DIARY (req-P1-THE-DIARY-appended-by-the-code-nev) ─────────────────────────────────
+    # ADMITTED is the DECISION this whole pipeline exists to record, so the line is written BEFORE
+    # the switch moves: if the diary refuses (an illegal transition — e.g. an `admitted` after a
+    # `refused` with no `reconsidered`), nothing is admitted and nothing is flipped. A decision
+    # with no history is a rumour, and a switch flipped by a rumour is the "two truths" this row
+    # exists to end.
+    source_id, how = events.dataset_of(flip[sid])
+    try:
+        ev = events.append(a.store, "admitted", source_id=source_id,
+                           actor=("operator" if by == "operator" else "machine"),
+                           why=(f"{sid}: the admission gate said yes ("
+                                + (f"by policy: {verdict['line']}" if by == "policy"
+                                   else "the operator's word on record")
+                                + f"); card {os.path.basename(card)}, every required check green, "
+                                  f"the flip survived its own re-read"),
+                           evidence=dict(adapter=sid, card=os.path.abspath(card),
+                                         card_sha256=_sha(open(card, "rb").read()),
+                                         gate_file=os.path.abspath(a.gate_file),
+                                         gate_word=gate_word, by=by,
+                                         policy_line=verdict["line"] or None,
+                                         policy_sha256=verdict.get("policy_sha"),
+                                         adapter_file=os.path.abspath(dest),
+                                         sources_config=os.path.abspath(a.sources_config),
+                                         source_id_source=how))
+    except events.DiaryRefused as e:
+        shutil.rmtree(moved_dir, ignore_errors=True)
+        if e.code == "truncated-diary":
+            print(str(e), flush=True)
+        return _refuse(e.code, f"{sid}: the diary refused the `admitted` event, so NOTHING was "
+                               f"admitted and sources.yml was not touched: {e}")
+    print(f"DIARY     seq {ev['seq']}  admitted  {source_id}  "
+          f"({os.path.basename(events.diary_path(a.store))})")
 
     with open(a.sources_config, encoding="utf-8") as fh:
         header = contract._header(fh.read())

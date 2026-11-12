@@ -1,0 +1,40 @@
+{
+ "conflict_rule": "two sources disagreeing on (gene_id, phenotype_term_id): both rows kept, conflict counted in conflicts.tsv \u2014 never averaged, never dropped (SCHEMA.md \u00a70)",
+ "generated_at": "2026-11-10T16:14:50.659142+00:00",
+ "keyed_by": {
+  "ok_keys": 77143,
+  "scope": {
+   "Brca1": {
+    "ensembl_gene_id": "ENSMUSG00000017146",
+    "gene_id": "MGI:104537",
+    "symbol": "Brca1"
+   },
+   "Pax6": {
+    "ensembl_gene_id": "ENSMUSG00000027168",
+    "gene_id": "MGI:97490",
+    "symbol": "Pax6"
+   },
+   "Wt1": {
+    "ensembl_gene_id": "ENSMUSG00000016458",
+    "gene_id": "MGI:98968",
+    "symbol": "Wt1"
+   }
+  },
+  "sha256": "649aac6f9d81052a1ee8839909457fcf1ee0979102e5d668786be6ac594360d1",
+  "table": "/home/kabui/app-farm/symbiont/store/xref/xref.tsv"
+ },
+ "records": {
+  "path": "/home/kabui/app-farm/symbiont/store/phenotypes/phenotypes/phenotype.v1.tsv",
+  "rows": 699,
+  "sha256": "8d17c366b93e80b4a345ffd3cf97add7ef439b2bd591297f57489eed962471e2"
+ },
+ "rows": 6,
+ "run_id": "pheno-run-2-slice",
+ "slice_of": {
+  "path": "symbiont/store/phenotypes/view/gene_phenotype.v1.tsv",
+  "rows_in_source": 699,
+  "why": "a six-row slice committed so the door suite runs in a clean clone; the live store holds all 699"
+ },
+ "terms_release": "Mon, 09 Nov 2026 13:19:46 GMT",
+ "view": "gene_phenotype.v1"
+}

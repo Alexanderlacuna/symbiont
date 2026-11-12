@@ -34,7 +34,8 @@ import sys
 import tempfile
 import threading
 
-from .selftest_sources import _Handler, base_sources, write_config, ENSEMBL_LICENCE, MGI_LICENCE
+from .selftest_sources import (_Handler, base_sources, seed, write_config, ENSEMBL_LICENCE,
+                               MGI_LICENCE)
 from .selftest_corrupt import corrupt
 
 FARM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -100,6 +101,7 @@ def start_server(root: str):
 
 
 def loop(store: str, cfg: str, *extra: str):
+    seed(store, cfg)                      # the fixture admits what it enabled (selftest_sources.seed)
     return subprocess.run([sys.executable, "-m", "symbiont.loop", "--store", store,
                            "--sources-config", cfg, *extra],
                           capture_output=True, text=True, cwd=FARM)

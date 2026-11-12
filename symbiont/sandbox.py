@@ -429,13 +429,68 @@ def host_of(url: str) -> str:
         return ""
 
 
+# ── THE ALLOWLIST IS THE ENTRY'S DECLARATIONS: ONE HOST EACH ─────────────────────────────────
+# req-P1-THE-LICENCE-HOST-IS-IN-THE-ALLOWL. Until this row the allowlist was base_url ALONE, and
+# that made a source whose terms live on another host impossible to sandbox: the station refused
+# the data because of terms it was structurally forbidden to read. MEASURED 2026-11-12 on MONDO
+# (data on github.com, licence page on raw.githubusercontent.com):
+#   REFUSED[licence-unknown] ... _NetRefused: network: raw.githubusercontent.com — host not in the
+#   adapter's network allowlist
+# That is a dead end, not a safety property. So the allowlist is now the entry's DECLARATIONS and
+# nothing else:
+#   base_url     -> the DATA host
+#   licence_url  -> the LICENCE PAGE host, and only when that URL names a DIFFERENT host
+# Each host keeps its PURPOSE in the banner ('github.com (data) · raw.githubusercontent.com
+# (licence page)'), so a reader sees why the second door was opened. Nothing widens further: an
+# endpoint host is still `foreign` (refused), the same host twice is still ONE entry, there is no
+# wildcard, and a licence page SERVED from a host no declaration names is refused by name
+# (REFUSED[licence-host-undeclared], admission.py) rather than followed.
+def _absolute_host(url) -> str:
+    """The host of an ABSOLUTE http(s) URL, else '' — a relative path is not a declaration of a
+    host (it resolves against base_url, which is declared already)."""
+    return host_of(url) if isinstance(url, str) and \
+        url.startswith(("http://", "https://")) else ""
+
+
+def allowlist_declarations(entry: dict) -> list[tuple[str, str]]:
+    """[(host, purpose)] — ONE entry per URL the entry declares, base_url first.
+
+    purpose is 'data' | 'licence page'. The licence host is a DECLARATION, never a widening: it
+    appears only because a `licence_url` names it, and it collapses into the data host when both
+    are the same host — so a same-host licence_url still yields exactly one entry (unchanged)."""
+    out: list[tuple[str, str]] = []
+    data = host_of(entry.get("base_url", ""))
+    if data:
+        out.append((data, "data"))
+    lic = _absolute_host(entry.get("licence_url"))
+    if lic and lic not in [h for h, _ in out]:
+        out.append((lic, "licence page"))
+    return out
+
+
+def licence_host_of(entry: dict) -> str:
+    """The host the entry DECLARES for its licence page ('' when it declares none).
+
+    Returned even when it equals the data host: the caller needs to know whether a host was
+    declared at all, not only whether it was a second door."""
+    return _absolute_host(entry.get("licence_url"))
+
+
+def allowlist_banner(entry: dict) -> str:
+    """The sandbox banner: one host per declaration, the purpose named, never a wildcard."""
+    decl = allowlist_declarations(entry)
+    if not decl:
+        return "allowlist: EMPTY (the entry declares no host) — nothing may be reached"
+    return "allowlist: " + " · ".join(f"{h} ({p})" for h, p in decl)
+
+
 def allowed_hosts_for_entry(entry: dict) -> tuple[set[str], list[str]]:
-    """The network allowlist of a sources.yml entry: its base_url, nothing else.
+    """The network allowlist of a sources.yml entry: the hosts it DECLARES, one per URL.
 
     Returns (allowed, foreign) where `foreign` names endpoint hosts the entry would reach that
-    its own base_url does not cover — the sandbox refuses the run rather than silently widening
+    none of its declarations cover — the sandbox refuses the run rather than silently widening
     the list (the allowlist is the entry's claim, not a wish)."""
-    allowed = {h for h in (host_of(entry.get("base_url", "")),) if h}
+    allowed = {h for h, _ in allowlist_declarations(entry)}
     foreign: list[str] = []
     for url in (entry.get("endpoints") or {}).values():
         if isinstance(url, str) and url.startswith(("http://", "https://")):
@@ -626,15 +681,25 @@ def nft_ruleset(pol: dict) -> str:
 
 
 def policy_for_entry(entry: dict, tier: str = "base-url", **kw) -> dict:
-    """TIER-STRICT generated from a sources.yml entry: its base_url host, nothing else — the
-    `foreign` check is the same one allowed_hosts_for_entry() applies at admission."""
-    allowed, foreign = allowed_hosts_for_entry(entry)
+    """TIER-STRICT generated from a sources.yml entry: its DATA host, nothing else — the
+    `foreign` check is the same one allowed_hosts_for_entry() applies at admission.
+
+    THE TIER IS THE DATA HOST (req-P1-THE-LICENCE-HOST-IS-IN-THE-ALLOWL): a tier confines the
+    PAYLOAD's egress to the host the data comes from. The sandbox's own allowlist — the one in
+    the banner and in the run record — is the artifact that opens the entry's DECLARED licence
+    host as its justified second door (see allowlist_declarations), because the machine door must
+    read the terms before any data may land. Keeping the two named separately is the point: the
+    ruleset never gains a host the banner does not name, and the banner never claims a host the
+    ruleset denies. The check below still reads the DECLARATIONS, so an endpoint that sits on the
+    licence host is not called foreign — the entry does declare it."""
+    declared, foreign = allowed_hosts_for_entry(entry)
     if foreign:
         raise SandboxRefused(
-            f"the entry would reach {', '.join(sorted(set(foreign)))} but its base_url is "
-            f"{', '.join(sorted(allowed)) or 'nothing'} — a policy is the entry's claim, never "
+            f"the entry would reach {', '.join(sorted(set(foreign)))} but it declares "
+            f"{', '.join(sorted(declared)) or 'nothing'} — a policy is the entry's claim, never "
             f"widened to cover an endpoint it does not name")
-    return netpolicy(tier, allowed_hosts=allowed, **kw)
+    data = host_of(entry.get("base_url", ""))
+    return netpolicy(tier, allowed_hosts={data} if data else set(), **kw)
 
 
 def policy_for_source(config_path: str, source_id: str, tier: str = "base-url", **kw) -> dict:

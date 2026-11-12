@@ -103,3 +103,13 @@ There is no daemon. One run at a time, under `flock`, is the whole recipe:
 
 A silent station is a finding, not a quiet one: if `runs/` has no record newer than your
 cadence, `symbiont health` says so (see OBS.md).
+
+## WHAT THE READING DOOR CANNOT ANSWER YET (2026-11-12)
+```
+literature   READ when the store has the view (evidence_level · abstract_stored · licence · release stamped per item). A store without a literature
+             harvest answers with a NAMED empty, not a blank.
+phenotype    NOT READ YET. The store's gene_phenotype view exists (699 annotations in the farm store) but `phenotype_evidence` looks for a source named
+             `mgi_phenotype_annotations` and the view's source is `mgi_genepheno`, so the door says "no phenotype-annotation source is in this store".
+             Consequence for an operator: that sentence is about the STATION's wiring, never about the biology. The fix is filed, not done — it changes
+             what two existing self-tests assert, so it goes in on its own.
+```
