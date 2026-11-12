@@ -283,7 +283,15 @@ class Run:
         self.proposed: list[dict] = []
         self.telemetry: list[dict] = []
         self.queries: list[dict] = []
-        self.looked = dict(surfaces=0, queries=0, new=0, errors=0)
+        self.looked = dict(surfaces=0, queries=0, new=0, seen=0, errors=0)
+        # THE RUN'S OBSERVATION LEDGER (req-P1-THE-DIARY-REFUSES-RE-OBSERVATION): one record per
+        # DIARY source_id for THIS run, so a candidate observed k times is ONE event carrying
+        # occurrences: k. `seen_again` is what the run looked at and did NOT record a transition
+        # for (a re-observation), and `reobserved` is the writer refusing to ask the diary twice.
+        self.observations: dict[str, dict] = {}
+        self.seen_again: list[dict] = []
+        self.reobserved: list[dict] = []
+        self.emitted: dict[tuple[str, str], dict | None] = {}
         self.steps_done: list[str] = []
         self.step_now = ""           # the step running when a stop happens (named in the record)
         self.stopped = ""            # the class that stopped the run ("" = completed)
@@ -328,19 +336,37 @@ class Run:
         it), so the diary key is the candidate id and the event SAYS so in its evidence: a weaker
         key that announces itself, never a stronger one that is invented. If the diary refuses the
         line (illegal transition, damaged tail) the refusal is named in the run's own ledger — the
-        cycle never pretends a transition was recorded when it was not."""
+        cycle never pretends a transition was recorded when it was not.
+
+        ONCE PER RUN PER CANDIDATE PER CLASS (req-P1-THE-DIARY-REFUSES-RE-OBSERVATION). A second
+        emission of the same class for the same candidate in the same run is NOT written: the diary
+        is right that 'discovered' may not follow 'discovered' (a table that permitted it would
+        stop being a state machine), so the WRITER must not ask twice. The attempt is named (printed
+        and in the report) and the ONE event that stands is returned, so no caller can report a
+        duplicate as if it were history. The count of the repeats lives in the evidence of that ONE
+        event (`occurrences`), written by `step_discover` from the run's observation ledger."""
         sid = str(cand.get("id") or "?")
+        if (sid, event_class) in self.emitted:
+            rec = self.observations.get(sid) or {}
+            self.reobserved.append(dict(source_id=sid, event_class=event_class,
+                                        occurrences=int(rec.get("occurrences") or 1)))
+            self.say(f"RE-OBSERVED {sid}  '{event_class}' is already written for this candidate in "
+                     f"run {self.run_id} — no second event: a re-observation is not a state change")
+            return self.emitted[(sid, event_class)]
         ev = dict(evidence or {})
         ev.setdefault("candidate", sid)
         ev.setdefault("full_name", cand.get("full_name", ""))
         ev.setdefault("run_id", self.run_id)
         ev.setdefault("source_id_source", "candidate-id: no dataset identity before sources.yml")
         try:
-            return events.append(self.store, event_class, source_id=sid, why=why, actor="machine",
-                                 evidence=ev)
+            written = events.append(self.store, event_class, source_id=sid, why=why,
+                                    actor="machine", evidence=ev)
         except events.DiaryRefused as e:
             self.note_refusal(e.code, f"{sid}: the diary refused the '{event_class}' event: {e}")
+            self.emitted[(sid, event_class)] = None      # refused once: same state, same answer
             return None
+        self.emitted[(sid, event_class)] = written
+        return written
 
     # -- the previous run (A6: the next cycle says how much it did) ----------------------------
     def _read_last_run(self) -> None:
@@ -531,9 +557,17 @@ def _api_candidate(run: Run, surface: dict, item: dict) -> dict:
 def _refuse_candidate(run: "Run", cand: dict, code: str, detail: str) -> bool:
     """EVALUATE's refusal, recorded TWICE on purpose: in the run's own ledger (the report reads it)
     and as a `refused` line in the diary with its refusal class in the evidence — the answer to
-    "why was this source refused" is a line, not a reconstruction (req-P1-THE-DIARY)."""
+    "why was this source refused" is a line, not a reconstruction (req-P1-THE-DIARY).
+
+    ONE line, carrying the COUNT (req-P1-THE-DIARY-REFUSES-RE-OBSERVATION): a candidate observed k
+    times in this run is refused ONCE with `occurrences: k` in the evidence, never k refusals —
+    'refused' may not follow 'refused' any more than 'discovered' may follow 'discovered', and the
+    diary is right about that. The run's own ledger still names every rule it applied."""
     run.note_refusal(code, detail)
-    run.diary(cand, "refused", detail, dict(refusal_code=code))
+    rec = run.observations.get(str(cand.get("id") or "?")) or {}
+    run.diary(cand, "refused", detail, dict(refusal_code=code,
+                                             occurrences=int(rec.get("occurrences") or 1),
+                                             seen_before=int(rec.get("seen_before") or 0)))
     return False
 
 
@@ -776,10 +810,51 @@ def _admit_refusal(out: str) -> tuple[str, str]:
 
 
 def step_discover(run: Run, surfaces: list[dict]) -> None:
-    """2 · DISCOVER over the registry, then EVALUATE and the pipeline, per candidate."""
-    seen = _seen_load(run)
+    """2 · DISCOVER over the registry, then EVALUATE and the pipeline, per candidate.
+
+    RE-OBSERVATION IS NOT A STATE CHANGE (req-P1-THE-DIARY-REFUSES-RE-OBSERVATION). The old writer
+    emitted `discovered` at the point of OBSERVATION, and one run can observe the same candidate
+    more than once (the same result from two queries; the same id from two surfaces; a candidate
+    the published seen-set already carried), so the diary — rightly — answered
+    REFUSED[illegal-transition]: 'discovered' may not follow 'discovered'. The fix is HERE and not
+    in the table: every observation lands in ONE per-run ledger keyed by the diary's source_id, the
+    ledger COUNTS them (`occurrences`, `seen_before`), and the run writes AT MOST ONE idempotent
+    `discovered` event per candidate — after the sweep, so the count on the line is the run's real
+    count and not a guess (an append-only line cannot be amended afterwards).
+
+    A candidate the published seen-set already carried is counted as SEEN and writes NO transition
+    at all; the summary says '0 new · N seen', which is the normal, readable result of a quiet
+    sweep. A candidate the DIARY already records is treated the same way (the diary is the state
+    machine; a second 'discovered' for it would be exactly the lie this row is about)."""
+    seen = _seen_load(run)                  # what PREVIOUS runs knew: the re-observation test
     seen_out = open(_seen_path(run), "a", encoding="utf-8") if _ensure_dir(run.state_dir) else None
-    candidates: list[dict] = []
+    observed = run.observations    # THE LEDGER: diary source_id -> one record per run (on the RUN,
+                                   # so `_refuse_candidate` and the report read the same counts)
+
+    def observe(cand: dict, surface_id: str, query: str = "") -> None:
+        """THE ONE PLACE AN OBSERVATION IS RECORDED — counts it, and nothing else is written.
+
+        `already` is asked of the seen-set as it stands NOW, so a key is counted new at most once
+        per run: the second query that returns it is a RE-observation (seen), not a discovery."""
+        sid, key = str(cand.get("id") or "?"), str(cand.get("key") or "")
+        rec = observed.get(sid)
+        if rec is None:
+            rec = observed[sid] = dict(cand=cand, occurrences=0, seen_before=0, keys=[],
+                                       observations=[], new=False)
+        if key in seen:
+            run.looked["seen"] += 1
+            rec["seen_before"] += 1          # it had been seen before THIS observation
+        else:
+            run.looked["new"] += 1
+            seen.add(key)                    # IN-RUN: a later query does not re-discover it
+            rec["new"] = True
+            if seen_out:
+                seen_out.write(json.dumps(dict(key=key, at=_utc())) + "\n")
+        rec["occurrences"] += 1
+        if key not in rec["keys"]:
+            rec["keys"].append(key)
+        rec["observations"].append(dict(surface=surface_id, query=query, url=cand.get("url", "")))
+
     for surface in surfaces:
         kind = surface.get("kind")
         if kind not in KINDS:
@@ -793,21 +868,14 @@ def step_discover(run: Run, surfaces: list[dict]) -> None:
                       f"surface {surface['id']!r}: every listed candidate needs an id and a url",
                       "surface-schema")
                 run.looked["queries"] += 1
-                key = f"listed:{c['id']}"
-                candidates.append(dict(id=c["id"], key=key, full_name=c["id"], url=c["url"],
-                                       licence_url=c.get("licence_url", ""),
-                                       count_endpoint=c.get("count_endpoint", ""),
-                                       rate_limit=c.get("rate_limit") or {},
-                                       question=c.get("question", ""),
-                                       licence=c.get("licence", ""), archived=False,
-                                       pushed_at="", surface=surface["id"]))
-                if seen_out and key not in seen:
-                    seen_out.write(json.dumps(dict(key=key, at=_utc())) + "\n")
-                    run.diary(dict(id=c["id"], full_name=c["id"]), "discovered",
-                              f"surface {surface['id']} listed candidate {c['id']} at {c['url']} "
-                              f"(run {run.run_id})",
-                              dict(surface=surface["id"], url=c.get("url", ""),
-                                   count_endpoint=c.get("count_endpoint", "")))
+                observe(dict(id=c["id"], key=f"listed:{c['id']}", full_name=c["id"],
+                             url=c["url"], licence_url=c.get("licence_url", ""),
+                             count_endpoint=c.get("count_endpoint", ""),
+                             rate_limit=c.get("rate_limit") or {},
+                             question=c.get("question", ""),
+                             licence=c.get("licence", ""), archived=False,
+                             pushed_at="", surface=surface["id"]),
+                        surface["id"])
             continue
 
         # github_search: every listed query is read, and LOGGED with its own count
@@ -829,20 +897,10 @@ def step_discover(run: Run, surfaces: list[dict]) -> None:
                 continue
             total = body.get("total_count")
             items = body.get("items") or []
-            new = 0
+            new_before = run.looked["new"]
             for item in items:
-                cand = _api_candidate(run, surface, item)
-                if cand["key"] in seen:
-                    continue
-                new += 1
-                run.looked["new"] += 1
-                candidates.append(cand)
-                if seen_out:
-                    seen_out.write(json.dumps(dict(key=cand["key"], at=_utc())) + "\n")
-                run.diary(cand, "discovered",
-                          f"query {q!r} on surface {surface['id']} returned {cand['full_name']} "
-                          f"(run {run.run_id})",
-                          dict(surface=surface["id"], query=q, url=cand.get("url", "")))
+                observe(_api_candidate(run, surface, item), surface["id"], query=q)
+            new = run.looked["new"] - new_before      # THIS query's own new count
             run.queries.append(dict(surface=surface["id"], query=q, url=url, count=total, new=new,
                                     error=""))
             run.say(f"QUERY     {surface['id']} {q!r} -> {total} result(s), {new} new")
@@ -851,8 +909,37 @@ def step_discover(run: Run, surfaces: list[dict]) -> None:
 
     run.say(f"I looked: {run.looked['surfaces']} surface(s) · {run.looked['queries']} "
             f"quer{'y' if run.looked['queries'] == 1 else 'ies'} · {run.looked['new']} new"
+            f" · {run.looked['seen']} seen"
             + (f" · {run.looked['errors']} error(s), each named above" if run.looked["errors"] else ""))
-    run.steps_done.append(f"discovery({run.looked['queries']} queries, {run.looked['new']} new)")
+    run.steps_done.append(f"discovery({run.looked['queries']} queries, {run.looked['new']} new, "
+                          f"{run.looked['seen']} seen)")
+
+    # ── ONE `discovered` LINE PER CANDIDATE, THEN EVALUATE ─────────────────────────────────────
+    # Written after the sweep (the count must be complete before an append-only line is written),
+    # and written only for a candidate that is new to BOTH the seen-set and the diary. Everything
+    # else is a re-observation: counted, named in the report, and NOT a transition.
+    prior_diary = events.read(run.store)
+    candidates: list[dict] = []
+    for sid, rec in observed.items():
+        state = prior_diary.state_of(sid)
+        if not rec["new"] or state is not None:
+            run.seen_again.append(dict(
+                id=sid, occurrences=rec["occurrences"], seen_before=rec["seen_before"],
+                keys=list(rec["keys"]),
+                why=(f"the diary already records '{state}' for it" if state is not None
+                     else "the seen-set already carried it")))
+            continue
+        first = rec["observations"][0] if rec["observations"] else {}
+        run.diary(rec["cand"], "discovered",
+                  f"surface {first.get('surface')}"
+                  + (f" query {first.get('query')!r}" if first.get("query") else "")
+                  + f" returned {rec['cand'].get('full_name') or sid} (run {run.run_id}; observed "
+                    f"{rec['occurrences']} time(s) this run, seen before {rec['seen_before']})",
+                  dict(surface=first.get("surface", ""), query=first.get("query", ""),
+                       url=rec["cand"].get("url", ""), occurrences=rec["occurrences"],
+                       seen_before=rec["seen_before"], keys=list(rec["keys"]),
+                       observations=rec["observations"][:8]))
+        candidates.append(rec["cand"])
 
     for cand in candidates:
         run.found.append({k: cand.get(k) for k in ("id", "key", "full_name", "url", "licence",
@@ -904,7 +991,8 @@ def write_report(run: Run) -> str:
     b = run.cfg["budget"]
     cost = run.cost
     looked = (f"I looked: {run.looked['surfaces']} surface(s) · {run.looked['queries']} "
-              f"quer{'y' if run.looked['queries'] == 1 else 'ies'} · {run.looked['new']} new")
+              f"quer{'y' if run.looked['queries'] == 1 else 'ies'} · {run.looked['new']} new"
+              f" · {run.looked['seen']} seen")
     if run.looked["errors"]:
         looked += f" · {run.looked['errors']} error(s), each named below"
     L = [f"# CYCLE-REPORT — {run.run_id}",
@@ -921,6 +1009,15 @@ def write_report(run: Run) -> str:
     L += _bullets([f"- `{c['id']}` — {c.get('full_name') or c.get('url')} (licence "
                    f"{c.get('licence') or 'n/a'}, surface `{c.get('surface')}`)"
                    for c in run.found])
+    L += ["", f"## seen again — {len(run.seen_again)} (a re-observation is NOT a transition, so no "
+               f"event was written)"]
+    L += _bullets([f"- `{s['id']}` seen {s['occurrences']}× this run (seen before: "
+                   f"{s['seen_before']}) — {s['why']}" for s in run.seen_again])
+    if run.reobserved:
+        L += ["", f"## the writer would not ask twice — {len(run.reobserved)}"]
+        L += _bullets([f"- `{r['source_id']}` '{r['event_class']}' was already written this run "
+                       f"(occurrences: {r['occurrences']}) — suppressed, the ONE line stands"
+                       for r in run.reobserved])
     L += ["", f"## refused — {len(run.refused)} (the rule is NAMED, always)"]
     L += _bullets([f"- REFUSED[{r['code']}] {r['detail']}" for r in run.refused])
     L += ["", f"## drafted — {len(run.drafted)}"]
@@ -962,6 +1059,7 @@ def write_record(run: Run, outcome: str) -> str:
                looked=run.looked, cost=run.cost, budget=run.cfg["budget"],
                budget_left=run.budget_left,
                found=run.found, refused=run.refused, drafted=run.drafted,
+               seen_again=run.seen_again, reobserved=run.reobserved,
                sandboxed=run.sandboxed, carded=run.carded, admitted=run.admitted,
                proposed=run.proposed, queries=run.queries, telemetry=run.telemetry)
     p = os.path.join(run.state_dir, "runs")
@@ -1363,6 +1461,71 @@ def selftest() -> int:
               next((l for l in p.stdout.splitlines() if l.startswith("I looked")), "(none)"))
         check("A7 nothing hung and a report was written",
               bool(glob.glob(os.path.join(tmp, "reports", "*.md"))))
+
+        # ══ A8 · RE-OBSERVATION IS NOT A STATE CHANGE ═════════════════════════════════════════
+        # req-P1-THE-DIARY-REFUSES-RE-OBSERVATION: two queries returning the SAME candidates in
+        # one run used to emit 'discovered' twice each, and the diary — rightly — answered
+        # REFUSED[illegal-transition]. The count now lives in ONE event (`occurrences`), a second
+        # run over an all-seen registry writes NOTHING and says '0 new · N seen', and the diary's
+        # table is untouched: a genuine discovered->discovered attempt is still refused.
+        print("\nA8 the same candidates from two queries in ONE run — ONE 'discovered' event each "
+              "carrying occurrences: 2; a second run over an all-seen registry — '0 new · N seen' "
+              "and ZERO REFUSED[illegal-transition]; the table still refuses a real duplicate",
+              flush=True)
+        tmp = os.path.join(tmpdir, "a8")
+        tree(tmp, queries=["repeat-one", "repeat-two"])
+        SEARCH.update(total_count=2, items=[
+            dict(full_name="repeat/in-both", html_url=f"{base}/r1", license=dict(spdx_id="MIT"),
+                 archived=False, pushed_at="2026-11-01T00:00:00Z"),
+            dict(full_name="repeat/in-both-too", html_url=f"{base}/r2",
+                 license=dict(spdx_id="MIT"), archived=False,
+                 pushed_at="2026-11-01T00:00:00Z")])
+        store8 = os.path.join(tmp, "store")
+        diary8 = os.path.join(store8, "source-events.jsonl")
+
+        def lines_of(cls: str) -> list[dict]:
+            if not os.path.isfile(diary8):
+                return []
+            return [json.loads(l) for l in open(diary8, encoding="utf-8")
+                    if l.strip() and json.loads(l).get("class") == cls]
+
+        p = cycle(tmp)
+        disc = lines_of("discovered")
+        check("A8 two queries, two candidates: exactly 2 'discovered' lines (not 4)",
+              len(disc) == 2, f"{len(disc)} discovered line(s)")
+        check("A8 each 'discovered' line carries occurrences: 2 (seen twice in one run)",
+              all((d.get("evidence") or {}).get("occurrences") == 2 for d in disc),
+              f"occurrences={[(d.get('evidence') or {}).get('occurrences') for d in disc]}")
+        check("A8 the first run meets ZERO REFUSED[illegal-transition]",
+              "illegal-transition" not in p.stdout,
+              next((l for l in p.stdout.splitlines() if "illegal-transition" in l), "(none)"))
+        head8 = events.head_of(store8)["head_sha256"]
+        refusals8 = len(lines_of("refused"))
+        check("A8 each candidate is REFUSED once, carrying occurrences: 2",
+              refusals8 == 2 and all((d.get("evidence") or {}).get("occurrences") == 2
+                                     for d in lines_of("refused")),
+              f"{refusals8} refused line(s)")
+        p2 = cycle(tmp)
+        check("A8 the second run says '0 new · 4 seen' (2 candidates x 2 queries)",
+              "I looked: 1 surface(s) · 2 queries · 0 new · 4 seen" in p2.stdout,
+              next((l for l in p2.stdout.splitlines() if l.startswith("I looked")), "(none)"))
+        check("A8 the second run writes NO diary line and meets ZERO illegal transitions",
+              events.head_of(store8)["head_sha256"] == head8
+              and "illegal-transition" not in p2.stdout,
+              f"head {'unchanged' if events.head_of(store8)['head_sha256'] == head8 else 'MOVED'}")
+        check("A8 the report names the re-observations instead of pretending to transitions",
+              "seen again" in open(sorted(glob.glob(os.path.join(tmp, "reports", "*.md")))[-1],
+                                   encoding="utf-8").read())
+        still_refused = False
+        try:
+            events.append(store8, "discovered", source_id="repeat_in_both",
+                          why="A8: a GENUINE second 'discovered' for the same candidate — the "
+                              "closed table must still refuse it")
+        except events.IllegalTransition:
+            still_refused = True
+        check("A8 the diary's TABLE is unchanged and still refuses discovered->discovered",
+              still_refused, "the table refused the planted duplicate" if still_refused
+              else "THE TABLE ACCEPTED A DUPLICATE — it was loosened")
 
         # ══ G4 · THE RATE LIMIT DOES NOT FIT THE BUDGET (DESIGN §3 step 3) ═══════════════════
         print("\nG4 a source whose own rate needs more wall clock than the run has left — "

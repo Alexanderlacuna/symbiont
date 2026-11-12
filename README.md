@@ -35,6 +35,8 @@ plus `handover.json` without touching either door. The reading layer exposes evi
 
 The manifest's contract — including verification depth and the rules for a station consuming another station's handover — is in [`docs/MANIFEST.md`](docs/MANIFEST.md).
 
+**What it speaks:** plain HTTPS for every fetch and every discovery query · an MCP *client* for the pinned PubMed server (as a transport to a source, and only if it exposes a count) · and no web search inside the station — the outward search sense belongs to the research layer. See [`docs/DESIGN.md`](docs/DESIGN.md) §11, which also says plainly that "an expedition" is design, not code.
+
 ## Start here — the quickstart
 
 First command. No install, no network, no key (Python 3.10+ and one YAML reader):

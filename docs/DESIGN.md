@@ -172,3 +172,33 @@ may claim `verified: manifest` (transport integrity) and never `verified: upstre
 
 The same section states the honest limit: federation gives you the integrity of a COPY. Re-derivation from the authority is the only thing that gives you
 the data's own truth, and a corpus that mixes the two without labelling them overstates itself.
+
+## 11 · WHAT THE STATION SPEAKS — three transports, and what an "expedition" is not
+The station talks to the world in exactly three ways, and they are not interchangeable. This section exists because "does it use MCP? does it use a web search?"
+has one honest answer per job, and the answer is different for each.
+
+```
+1 PLAIN HTTPS (urllib, no SDK, no key)      symbiont/http.py
+   every fetch, every probe, every update check, every licence read. Discovery is this: one GET to a search API, and the number that comes back is the API's
+   own total_count. No model, no key, no browser.
+
+2 MCP CLIENT (stdio JSON-RPC)              symbiont/literature/mcp.py · symbiont/adapters/mcp_source.py
+   used as a TRANSPORT TO A SOURCE, never as a way to find sources. The pinned server is @cyanheads/pubmed-mcp-server 2.12.0; the generic adapter lets any
+   MCP server be a source PROVIDED IT EXPOSES A COUNT — otherwise REFUSED[no-count-endpoint], which is what happened to eight of nine candidates in the
+   AMR discovery test.
+
+3 WEB SEARCH (Exa and friends)             NOT IN THE STATION — zero references.
+   an outward search sense belongs to the research layer, not to the machine. Every portal we found with it (WHO GLASS, Africa CDC, MONDO, the HF
+   repackaging) arrived as a CANDIDATE that then had to pass the same funnel as anything else.
+```
+
+**And "expedition" is not a fourth transport — it is not built at all.** The word appears in comments and in the blueprint; there is no route file, no
+checkpoint, no cargo. What exists is three mechanisms the word would compose:
+```
+THE CYCLE    one bounded pass over a surface registry (discover/watch), 15–30 s, a report per run
+THE LOOP     one fetch + verify + store for each enabled source
+THE FUNNEL   probe → evaluate → draft → sandbox → card → admit, per candidate
+```
+An expedition — *a scout with a route: ordered checkpoints, a budget per checkpoint, a verifier per checkpoint, and cargo that accumulates* — would be a
+route file laid over those three, using the same transports. Until it is built, the sentence "a scout is the discovery light looking outward; an expedition
+is a scout with a route" stays a design note, not a capability.
