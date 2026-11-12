@@ -49,6 +49,22 @@ So the corpus can grow without a human reading every candidate — and it cannot
 propose. That is the part worth pointing at: **a station that expands its own inputs while staying auditable**, with every refusal kept as evidence
 (we have 61 refused repositories, 3 refused data portals and their reasons on file).
 
+### Sophie — the sentinel
+
+The thing that does the looking has a name: **Sophie**. She is the sentinel — the part of the station that keeps an eye on the sources you already trust and,
+when you allow it, goes looking for new ones. The name is a nickname, not a product mark (the word is already taken by a genomics company); in code she is
+`symbiont/cycle.py`, and you address her three ways:
+
+```
+cycle_status     what she is set to do, when she last did it, what it cost, what the last report said — read-only
+cycle_run_once   one bounded run now (telemetry, then discovery if enabled), on her own budget, writing a CYCLE-REPORT and a run record
+cycle.yml        her settings: enabled · mode (watch | discover | both) · cadence · surface registry · budget · the admission default
+```
+
+Her two lights, again, because it is the whole idea: the **watching** light ships on and never changes anything; the **discovery** light ships off and only
+proposes. A quiet week sounds like this — *"I looked: 1 surface · 7 queries · 0 new"* — and a busy one ends in candidates with their refusals, never in
+something admitted behind your back.
+
 ### Keeping it current — the schedule
 
 Nothing here depends on you remembering to run it. Six small jobs, one wrapper (`symbiont/station-job.sh`), each with a heartbeat so a missed run is visible:
@@ -168,6 +184,48 @@ Different domains, different languages of data, same machine.
 
 What changes per source is only **what may be claimed**: `verified: upstream` when the source states its count, `verified: file` when ours equals the rows
 in the file it shipped. A repository with no count stays a *tool*, and is refused as a source by name.
+
+### An example, with the numbers we actually got
+
+Adding a source is a config entry and an adapter. Here is MONDO (disease terms), which we really did put through the funnel — including where it refused:
+
+```yaml
+# symbiont/sources.yml — one entry, every field is data
+- id: mondo
+  publisher: monarch          # → dataset_id becomes monarch:mondo-base
+  dataset: mondo-base
+  base_url: https://github.com/monarch-initiative/mondo/releases/download/v2026-11-03/
+  endpoints: { data: mondo-base.obo, metadata: mondo-base.obo }
+  licence_url: https://raw.githubusercontent.com/monarch-initiative/mondo/master/LICENSE
+  licence_text: "Attribution 4.0 International"
+  rate_limit: { min_interval_s: 3, requests_per_minute: 20 }
+  enabled: false              # ← stays false until the funnel says otherwise
+```
+
+```python
+# symbiont/adapters/mondo.py — four calls, and that is the whole interface
+class Mondo:
+    name = "mondo"                                   # the same string as the config id
+    role = "xref_provider"                           # contributes cross-references
+    def discover(self, http, since): ...             # what release is current (v2026-11-03)
+    def fetch(self, http, since): ...                # the file itself
+    def normalise(self, resources): ...              # MONDO:ID · label · synonyms · xrefs (OMIM, ORPHA, DOID) · parents
+    def verify(self, discovery, normalised): ...     # ours vs the count the source states — or, for a dump, ours vs the file's own rows
+```
+
+What the funnel said, in order:
+
+```
+probe       read 2 requests · 11,801 bytes · sha256 0c411232… · sample rows quoted
+evaluate    licence READ: "Attribution 4.0 International" (page sha recorded) · cadence: last-modified Tue, 03 Nov 2026
+draft       adapter skeleton written to the drafts bay · contract load check PASS (name · role · four methods)
+sandbox     throwaway store · budget {6 req, 20 MB, 600 s} · allowlist armed: github.com (data) · raw.githubusercontent.com (licence page)
+            REFUSED[sandbox-breach] the adapter tried to connect to release-assets.githubusercontent.com — the DATA 302s to another host
+card        REFUSED[licence] — a source may not be carded under terms nobody read
+```
+
+Two lessons the station taught us there, and both are in the code now: the **licence host** and the **redirect host** must be *declared* endpoints, and a
+count that the source does not state is `verified: file` (ours = the rows in the file it shipped), not `verified: upstream`.
 
 ## It composes — one station can be another station's source
 
