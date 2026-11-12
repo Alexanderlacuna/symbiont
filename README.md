@@ -116,6 +116,30 @@ provenance      the expedition is a third actor in the log (actor: expedition:<n
 Status: proposal only — [`docs/DESIGN.md`](docs/DESIGN.md) §11 carries the note marked **PROPOSED, NOT BUILT**, and two p2 rows hold the work
 (`GRANTS-AND-INHERITANCE`, `THE-EXPEDITION-IS-A-THIRD-ACTOR`). The principle it protects: **an expedition may organise authority; it cannot manufacture it.**
 
+### Refused by name, with the evidence — and the three words kept apart
+
+A refusal is never a blank and never a stack trace: it is a **class**, and it carries the evidence that produced it.
+
+```
+REFUSED[no-surfaces]        the registry you declared is empty            the path it looked for
+REFUSED[no-rows]            the candidate publishes no records            the URL it read
+REFUSED[no-count-endpoint]  a repository, not a countable dataset         "a search result is a repository" (eight of nine in one sweep)
+REFUSED[licence-unreadable] the API/page states no readable licence       "NOASSERTION" / "null" + the page it tried
+REFUSED[count-mismatch]     ours ≠ theirs                                 both numbers, both URLs, the run record
+REFUSED[budget]             this would cross the budget                   "86,331,466 more bytes would cross 8,000,000"
+REFUSED[sandbox-breach]     the adapter reached an undeclared host        both hosts named
+REFUSED[missing-dataset]    a spec's required dataset is absent           which dataset, and whether it was never admitted, enabled, fetched or went stale
+REFUSED[not-admitted]       intent without history                        "sources.yml says enabled: true, but the diary holds no admitted event"
+```
+
+And three words that must not be confused, because they belong to three different layers:
+
+```
+REFUSED   an OPERATION the machine declined (to fetch, to admit, to spend) — the machine's word
+REJECTED  a ROW that did not survive normalisation (712 rows with no symbol) — counted, never dropped silently, listed in the manifest
+REFUTED   a CLAIM that contradicts the evidence — the ANALYSIS layer's word; the station never refutes biology, it only declines to assert what it cannot bind
+```
+
 ## The architecture is the product
 
 Everything else is one deployment of it. Five invariants hold for every source and every domain:
@@ -195,7 +219,7 @@ Adding a source is a config entry and an adapter. Here is MONDO (disease terms),
   publisher: monarch          # → dataset_id becomes monarch:mondo-base
   dataset: mondo-base
   base_url: https://github.com/monarch-initiative/mondo/releases/download/v2026-11-03/
-  endpoints: { data: mondo-base.obo, metadata: mondo-base.obo }
+  endpoints: { data: "<the release asset>", metadata: "<the same asset>" }
   licence_url: https://raw.githubusercontent.com/monarch-initiative/mondo/master/LICENSE
   licence_text: "Attribution 4.0 International"
   rate_limit: { min_interval_s: 3, requests_per_minute: 20 }
@@ -203,7 +227,7 @@ Adding a source is a config entry and an adapter. Here is MONDO (disease terms),
 ```
 
 ```python
-# symbiont/adapters/mondo.py — four calls, and that is the whole interface
+# your-deployment/symbiont/adapters/mondo.py — four calls, and that is the whole interface
 class Mondo:
     name = "mondo"                                   # the same string as the config id
     role = "xref_provider"                           # contributes cross-references
@@ -288,6 +312,32 @@ A CORPUS A LAB CAN RE-RUN            any of the above handed over as a manifest,
 
 And the composability above means a research group can **share collections without sharing infrastructure**: publish a hand-over, and the next group ingests it
 with the chain and the licences intact.
+
+### A web of specialised nodes
+
+The point of the hand-over contract is that stations can specialise and still compose. Nobody has to run the whole pipeline:
+
+```
+      COLLECTORS                        SYNTHESISERS                         CONSUMERS
+   (raw, messy sources)              (cross-reference, enrich)              (ask questions)
+
+   ┌────────────────┐                ┌────────────────────┐                ┌────────────────────┐
+   │ genome / gene  │──hand-over──►  │ gene × disease ×   │──hand-over──►  │ a lab's assistant  │
+   │ annotation     │  + manifest    │ phenotype joins    │  + manifest    │ a course, a paper  │
+   └────────────────┘                └────────────────────┘                └────────────────────┘
+   ┌────────────────┐                       ▲        ▲                      ┌────────────────────┐
+   │ ontology +     │──hand-over──►         │        │      ◄──hand-over──── │ another station    │
+   │ release assets │                       │        │                      │ (re-uses a corpus) │
+   └────────────────┘                ┌──────┴────────┴──────┐               └────────────────────┘
+   ┌────────────────┐                │ resistance reference │
+   │ surveillance   │──hand-over──►  │ + regional cohorts   │
+   │ reports        │                └──────────────────────┘
+   └────────────────┘
+```
+
+Each node keeps its own sources, its own licences and its own admission decisions; what travels between them is a file plus a manifest, so a consumer can
+walk the chain back to the authority and a producer never learns who read it. **A collector can be small** (one endpoint, one night's work); **a synthesiser
+adds value by joining**; **a consumer never touches the raw internet**.
 
 ## What this deployment has not wired *yet*
 
