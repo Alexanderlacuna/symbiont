@@ -49,6 +49,22 @@ So the corpus can grow without a human reading every candidate — and it cannot
 propose. That is the part worth pointing at: **a station that expands its own inputs while staying auditable**, with every refusal kept as evidence
 (we have 61 refused repositories, 3 refused data portals and their reasons on file).
 
+### Sophie — the sentinel
+
+The thing that does the looking has a name: **Sophie**. She is the sentinel — the part of the station that keeps an eye on the sources you already trust and,
+when you allow it, goes looking for new ones. The name is a nickname, not a product mark (the word is already taken by a genomics company); in code she is
+`symbiont/cycle.py`, and you address her three ways:
+
+```
+cycle_status     what she is set to do, when she last did it, what it cost, what the last report said — read-only
+cycle_run_once   one bounded run now (telemetry, then discovery if enabled), on her own budget, writing a CYCLE-REPORT and a run record
+cycle.yml        her settings: enabled · mode (watch | discover | both) · cadence · surface registry · budget · the admission default
+```
+
+Her two lights, again, because it is the whole idea: the **watching** light ships on and never changes anything; the **discovery** light ships off and only
+proposes. A quiet week sounds like this — *"I looked: 1 surface · 7 queries · 0 new"* — and a busy one ends in candidates with their refusals, never in
+something admitted behind your back.
+
 ### Keeping it current — the schedule
 
 Nothing here depends on you remembering to run it. Six small jobs, one wrapper (`symbiont/station-job.sh`), each with a heartbeat so a missed run is visible:
