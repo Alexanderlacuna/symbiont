@@ -1481,7 +1481,7 @@ def selftest() -> int:
                  license=dict(spdx_id="MIT"), archived=False,
                  pushed_at="2026-11-01T00:00:00Z")])
         store8 = os.path.join(tmp, "store")
-        diary8 = os.path.join(store8, "source-events.jsonl")
+        diary8 = events.diary_path(store8)      # the name is spelled in diary.py and NOWHERE else
 
         def lines_of(cls: str) -> list[dict]:
             if not os.path.isfile(diary8):

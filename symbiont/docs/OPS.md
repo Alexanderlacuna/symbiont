@@ -113,3 +113,13 @@ phenotype    NOT READ YET. The store's gene_phenotype view exists (699 annotatio
              Consequence for an operator: that sentence is about the STATION's wiring, never about the biology. The fix is filed, not done — it changes
              what two existing self-tests assert, so it goes in on its own.
 ```
+
+## FIRST RUN OF A CLONE — bootstrap the shipped sources (2026-11-12)
+```
+a clone ships INTENT (sources.yml: enabled: true) and no HISTORY (the store, and with it the diary), so the loop refuses with
+REFUSED[not-admitted] until the initial admission history is established — by design, and never silently. The explicit step:
+   python3 -m symbiont.registry bootstrap --from-seed --why "installed from the public repository"
+it writes ONE admitted{origin: backfill} per shipped source, naming the fixture run record it came from (or saying the live store is not shipped),
+and it refuses if the source already has a real admission, was denied, or is not in sources.yml. Run it twice: the second run does nothing.
+After that, discovery, the loop and the manifest behave exactly as the README describes.
+```
