@@ -277,6 +277,24 @@ produced it, because each hop keeps both levels and copies the licences forward.
 agrees with its manifest) and never `verified: upstream` (re-derived from the authority) — federation gives you the integrity of a copy, not the truth of a
 re-derivation.
 
+### How your own source gets added — three routes, all through the same gate
+
+A source is **two files at most**, never a hidden runtime change: an *entry* in `sources.yml` (the declaration: who it is, its URLs, licence, rate limit,
+budget, `enabled`) and, if it needs one, an *adapter* in `symbiont/adapters/` (four calls). Which of the three routes you take depends on what you are pointing at:
+
+```
+1 NO CODE AT ALL     the thing already speaks a shape we know:
+                       · another station's hand-over   → an entry; the generic manifest adapter reads it
+                       · an MCP server with a count    → an entry; the generic MCP adapter talks to it
+2 ONE SMALL FILE     the thing speaks its own shape:       an adapter with discover · fetch · normalise · verify, plus the entry
+3 LET IT DRAFT       you do not want to write the adapter:  probe → evaluate → draft writes the skeleton into the drafts bay, you review it,
+                                                            then sandbox → card → admit
+```
+
+What you should **not** do is reach into a running station and change what it may fetch from a script or a prompt: `sources.yml` is the declared intent, the
+adapter is code under review, and the diary records the decision. That is why admission is a separate act from fetching — and why "add a source" always means
+*write a file, then pass the gate*, never *reach in and flip something*.
+
 ### An MCP server can be a source
 
 Any MCP server that exposes a **count** can be pointed at like any other source — the station has a generic adapter (`symbiont/adapters/mcp_source.py`) and
