@@ -129,6 +129,21 @@ interpretation — candidates, claims, refutation conditions. One answers questi
 those apart is what stops an interpretation from being mistaken for a record.
 **Declared endpoints only.** The sandbox reaches only hosts the entry declares (data · licence · metadata), with redirects resolved once at admission and pinned; a 302 to an undeclared host is refused by name. The goal is that the sandbox can always reach the evidence it needs to judge a source, without ever widening beyond the declaration.
 
+### 9a · WHAT THE READING DOOR DOES NOT HAVE YET (stated, so an empty section is explainable)
+An empty section from this door is always NAMED — but a named empty can still be ambiguous to a reader, so here is what is missing and why.
+
+| the arm | state | what a reader sees today | what fills it |
+|---|---|---|---|
+| **literature** (publications per gene) | the door READS it when the store has the view, and stamps `evidence_level` · `abstract_stored` · `licence` · `release` on every item | real PMIDs with their evidence level, or a named empty when the arm is absent | a literature harvest at scale (`loop` against the pinned PubMed MCP); the store currently holds a small run |
+| **phenotype ontology** (MP terms per gene) | **BUILT but NOT READ by the door** — the store has a `gene_phenotype` view and `phenotype_evidence` still answers "no phenotype-annotation source is in this store", because the view's source name (`mgi_genepheno`) is not the name the door looks for (`mgi_phenotype_annotations`) | a named empty that reads like "nothing is known" | the same treatment the literature arm just got: read the view, stamp `evidence_code` · `citation` · `statement` · `release`; and a real harvest of `MGI_GenePheno.rpt` |
+
+**Why the phenotype wiring is not done here:** it changes what two existing self-tests assert (the fixture store answers "source not in store" today), so
+it is filed as its own change rather than smuggled in with the literature one. Until then, a reader should treat "no phenotype-annotation source in this
+store" as a statement about the STATION, not about the biology.
+
+The coverage engine already says this without the reader having to infer it: `research_check` reports `complete: false` with
+`missing: [mgi_phenotype_annotations, pubmed]`, and states `acquisition performed: NO · corpus modified: NO`.
+
 ## 10 · FEDERATION — a station as another station's source
 A handover manifest is source-shaped: rows, counts, release, licence, per-row provenance, hashes. So one station's output can be another station's input,
 through the same funnel — no new machinery, one adapter. The obligations are a contract, not an aspiration, and they live in
