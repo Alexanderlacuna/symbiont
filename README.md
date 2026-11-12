@@ -80,6 +80,26 @@ A *research spec* is the interesting one: it is an executable contract — run i
 before spending a request. Owner-governed orchestration (a route with checkpoints that inherits, and can only narrow, the station's policy) is designed and
 **not built**: [`docs/DESIGN.md`](docs/DESIGN.md) §11.
 
+### Owner-defined orchestration — designed, not built
+
+Discovery can already be pointed, budgeted and switched off. What is **designed** is for an owner to define a whole *route* — an expedition — and the policy
+it runs under, with the station's own authority as the ceiling:
+
+```
+an expedition   a route of checkpoints (look here → probe these → sandbox the ones that pass → stop)
+owner policy    three ORTHOGONAL grants, never one "autonomy level":   WRITE (none · propose · acquire · publish)
+                                                                       SPEND (requests · bytes · wall · per-host)
+                                                                       ATTENTION (which transitions need a human — admit by default)
+inheritance     effective = meet(station, expedition):  permissions intersected · prohibitions unioned · budgets minimised · approvals unioned
+                ⇒ a route may narrow what it is allowed to do, and can never widen it
+refusals        every one names its layer:  REFUSED[admission-denied by=station] · REFUSED[expedition-prohibits op=admit] · REFUSED[budget by=…]
+accounting      the effective budget flows into the ONE place that charges a request, so a budget is enforced, not respected
+provenance      the expedition is a third actor in the log (actor: expedition:<name>) and the route's sha is pinned in the run record and the manifest
+```
+
+Status: proposal only — [`docs/DESIGN.md`](docs/DESIGN.md) §11 carries the note marked **PROPOSED, NOT BUILT**, and two p2 rows hold the work
+(`GRANTS-AND-INHERITANCE`, `THE-EXPEDITION-IS-A-THIRD-ACTOR`). The principle it protects: **an expedition may organise authority; it cannot manufacture it.**
+
 ## The architecture is the product
 
 Everything else is one deployment of it. Five invariants hold for every source and every domain:
