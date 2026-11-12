@@ -123,6 +123,36 @@ A manifest is source-shaped: rows, counts, release, licence, hashes. So one stat
 Status: the rules above are the contract; the adapter that implements them (`manifest_source`) is filed and not yet built. Until it exists, a manifest is
 consumed by a script or an uploader, not by another station.
 
+## 4a · THE CHAIN — what transitivity gives, and what it does not
+Connections are NOT transitive; provenance IS. Station C never talks to Station A, yet A's facts reach C with receipts — provided the chain is walked, not
+believed. Four obligations make that true.
+
+```
+1 VERIFIABLE, NOT UNBREAKABLE
+   C's hash proves C received B's file. It says nothing about B's copy of A. If the chain is to be a proof, C (or C's auditor) must be able to FETCH each
+   ancestor manifest named in `via:` and check it. A chain you cannot walk is a claim; a chain you can walk is evidence. So a producer must publish its
+   manifests at stable, hash-pinned locations for as long as its rows are in circulation.
+2 DERIVATIONS MUST BE DECLARED — the hop is not always a copy
+   A midstream station SYNTHESISES (matches mouse genes to human diseases). Its rows are then not A's rows, they are derived. So every hop carries a
+   transform record: `transform: {id, version, code_sha256, inputs: [...via...]}`. Without it the chain proves that C's row came from B's row and says
+   nothing about how B's row was computed from A's — which is the difference between provenance and hand-waving.
+3 CHAIN AGE IS PART OF THE CLAIM
+   C's "current" is B's "current" is A's "current". A hop that caches silently makes C's data older than C believes. So the manifest carries, per hop, the
+   upstream release and the time it was fetched — and the reader can compute the chain's age. A consumer that cannot state the age of the oldest link has
+   not read the chain.
+4 NOBODY NOTARISES
+   There is no root authority in this ecosystem. A dishonest or broken hop is invisible to hashes; only re-derivation (where it is possible) exposes it.
+   That is why the honest claim stays `verified: manifest` for every federated row, and why the count check and the licence gate — not the chain — are the
+   standing controls.
+```
+
+### What the chain DOES give you
+```
+· an auditor can walk C → B → A → the original authority and check every link, without asking any of them for permission
+· a corrupted or stale upstream hop is caught at the FIRST hop that re-verifies (B, if B re-runs its count check on update)
+· blast radius is real: a broken A does not reach C, because B refuses the bad update and C never sees it — but only for failures a check can see
+```
+
 ## 5 · WHAT THE MANIFEST DOES NOT DO
 ```
 · it does not post anything anywhere — the uploader lives on the consumer's side (D6)
