@@ -246,3 +246,35 @@ the index renders those rows as `admitted (backfill)`, the diary keeps `origin: 
 words. The station must be able to say not only why it trusts a source, but HOW its initial trust state was established — that is provenance, and it is the
 difference between a clone that silently trusts `enabled: true` and one that refuses to run at all.
 ```
+
+## 13 · WHAT THE GATE LEARNED — three rules about evidence (all learned by running it, not by review)
+
+### 13.1 · The licence gate reads THREE ways, and says which
+```
+api        the surface's own spdx_id (a code host can answer this)                                        → "how=api"
+fetched    the candidate's DECLARED licence_url, read once and hashed                                    → "how=fetched" + page sha256
+declared   the OPERATOR's licence text, verbatim, recorded with actor=operator                           → "how=declared"
+absent     none of the three: REFUSED[licence-unreadable] naming BOTH attempts
+```
+The run report prints the tally — `fetched · declared · absent` — so a reader can see how each source's terms were established. A listed candidate
+(GenAge, an NCBI file, a known portal) is now evaluable at all; before this rule the gate only knew how to ask a code host, so every known address was
+refused as unlicensed.
+
+### 13.2 · `reconsidered` REOPENS a candidate — otherwise a refusal is permanent
+```
+refused → reconsidered → evaluated → refused | admitted          (in that order, in the diary)
+a reopened candidate emits `evaluated`, never a second `discovered` — the table forbids it, and rightly: it was discovered once.
+every other terminal state still skips a discovery run, and the report names it (`admitted` cannot be reopened by looking again)
+without this rule the fix that answers a refusal can never be tested through the station, and the only escape is editing the diary by hand.
+```
+
+### 13.3 · A DUMP IS ITS OWN COUNT — `verified: file`
+```
+an API source states its number:  ours == theirs                                   → verified: upstream
+a dump (zip · .rpt · .obo · a release asset) has no server to ask, so:
+   the sha256 pins WHICH bytes we read · we count the records we parsed from those bytes · the count we publish is our count OF THAT FILE
+   and if the publisher states a number anywhere (README, release notes, a manifest) ours must equal it too
+                                                                                   → verified: file
+the honest weakness, which is why the label exists: a truncated download agrees with itself. So a file shorter than its declaration is
+REFUSED[file-truncated] naming both lengths, zero parsed records is REFUSED[no-rows], and no row from this path may ever claim `verified: upstream`.
+```

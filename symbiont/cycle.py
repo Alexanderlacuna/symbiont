@@ -22,9 +22,14 @@ THE ORDER (DESIGN §3), each step's refusal class named:
                   its count. REFUSED[no-surfaces] with no registry (it never invents where to look),
                   REFUSED[surface-kind-unknown], REFUSED[budget] (stops the cycle),
                   REFUSED[network-down] / REFUSED[rate-too-low] per query (recorded, run continues)
-    3 EVALUATE    per candidate: the licence read from the surface's API · a count endpoint · the
-                  rate limit · archived · dead. REFUSED[licence-unreadable] · REFUSED[archived] ·
-                  REFUSED[dead-repo] · REFUSED[no-count-endpoint]
+    3 EVALUATE    per candidate: THE LICENCE READ (a declared licence text — the operator's own
+                  words — else the declared `licence_url` fetched ONCE and hashed, else refused
+                  naming BOTH attempts) · a count endpoint · the rate limit · archived · dead.
+                  REFUSED[licence-unreadable] · REFUSED[archived] · REFUSED[dead-repo] ·
+                  REFUSED[no-count-endpoint]  (req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D: a
+                  `kind: listed` candidate has no code-host API to publish an spdx_id, so its
+                  terms are the terms PAGE it declared — the gate reads it, or the refusal is a
+                  blanket and the whole 'a registry of data portals' path is unreachable)
     4 DRAFT       only when draft.provider is configured. None configured -> the candidate is
                   PROPOSED (reported, not built). REFUSED[draft-no-output] · REFUSED[licence-unreadable]
     5 SANDBOX     the draft runs in the tested throwaway store with the cycle's budget, and ITS COUNT
@@ -122,6 +127,177 @@ def _utc() -> str:
 def _sha_file(path: str) -> str:
     with open(path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest()
+
+
+def _sha_text(t: str) -> str:
+    """The sha256 of a licence TEXT exactly as it was read (the page's bytes, or the operator's
+    words) — the receipt that makes 'the terms were read' checkable later."""
+    return hashlib.sha256((t or "").encode("utf-8", "replace")).hexdigest()
+
+
+# ── READING A TERMS PAGE (req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D) ────────────────────────────
+# A terms page is PROSE, so reading it is a recogniser with a DOCUMENTED PRECEDENCE, never a
+# substring hunt: the first pattern that fires inside a licensing sentence names the licence, and
+# the sentence itself is quoted in the record so a person can check the machine's reading. The
+# order in this table IS the precedence, and it is here and nowhere else — `Creative Commons
+# Attribution 3.0 Unported` beats the `GNU public licence` that the same page (HAGR's legal page)
+# mentions in passing about its ARCT software, because the CC patterns come first. A recogniser
+# that could not be argued with after the fact would be worse than no recogniser at all.
+LICENCE_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    # (label, regex, id — `{0}` is filled from the regex's first group when it has one)
+    ("CC0", r"\bCC0\b(?:\s*1\.0)?", "CC0-1.0"),
+    ("CC BY-SA", r"Creative\s+Commons\s+Attribution\s*[-\u2013]?\s*ShareAlike\s+(\d\.\d)",
+     "CC-BY-SA-{0}"),
+    ("CC BY-SA", r"Creative\s+Commons\s+Attribution\s*[-\u2013]?\s*ShareAlike", "CC-BY-SA"),
+    ("CC BY", r"Creative\s+Commons\s+Attribution\s+(\d\.\d)", "CC-BY-{0}"),
+    ("CC BY", r"Creative\s+Commons\s+Attribution", "CC-BY"),
+    ("ODbL", r"Open\s+(?:Data\s+Commons\s+)?Open\s+Database\s+Licen[cs]e", "ODbL-1.0"),
+    ("Apache-2.0", r"Apache\s+Licen[cs]e,?\s+[Vv]ersion\s+2\.0", "Apache-2.0"),
+    ("MIT", r"\bMIT\s+Licen[cs]e\b", "MIT"),
+    ("BSD-3-Clause", r"\bBSD[\s-]3[\s-]Clause\b", "BSD-3-Clause"),
+    ("GPL", r"GNU\s+(?:General\s+|Lesser\s+|Affero\s+)?[Pp]ublic\s+[Ll]icen[cs]e\s+[Vv]ersion\s+(\d)",
+     "GPL-{0}.0"),
+    ("GPL", r"GNU\s+(?:General\s+|Lesser\s+|Affero\s+)?[Pp]ublic\s+[Ll]icen[cs]e", "GPL"),
+    ("public domain", r"\bpublic\s+domain\b", "public-domain"),
+)
+LICENCE_WINDOW = 240      # chars either side of a phrase: is it inside a LICENSING sentence?
+
+
+def _licence_plain(text: str) -> str:
+    """The page as a person reads it: scripts and style dropped, markup dropped, space collapsed."""
+    t = re.sub(r"<(script|style)\b.*?</\1>", " ", text or "", flags=re.S | re.I)
+    t = re.sub(r"<[^>]+>", " ", t)
+    for a, b in (("&nbsp;", " "), ("&amp;", "&"), ("&#169;", "(c)"), ("&quot;", '"'),
+                 ("&#39;", "'"), ("&lt;", "<"), ("&gt;", ">")):
+        t = t.replace(a, b)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _licence_sentence(plain: str, a: int, b: int) -> str:
+    """The sentence the matched phrase sits in — quoted VERBATIM (bounded), the human check on the
+    machine's reading. Never a paraphrase: the reader must be able to see the page's own words."""
+    lo = max(plain.rfind(". ", 0, a), plain.rfind("; ", 0, a))
+    lo = 0 if lo < 0 else lo + 2
+    hi = plain.find(". ", b)
+    hi = len(plain) if hi < 0 else hi + 1
+    s = re.sub(r"\s+", " ", plain[lo:hi]).strip()
+    return s[:300] + ("\u2026" if len(s) > 300 else "")
+
+
+def _recognise_licence(text: str) -> dict:
+    """READ a terms page -> `dict(licence, quote, note)`; licence "" when nothing is recognisable.
+
+    A page about permissions that GRANTS nothing is NOT a licence, and this returns "" for it: the
+    gate may never turn 'we fetched a page' into 'we read the terms'. A phrase counts as stronger
+    evidence when it sits in a sentence that speaks of licensing (`licen[cs]` within
+    LICENCE_WINDOW), so a passing mention loses to an actual grant."""
+    plain = _licence_plain(text)
+    hits: list[tuple[int, int, int, str, str]] = []
+    for rank, (_label, rx, form) in enumerate(LICENCE_PATTERNS):
+        for m in re.finditer(rx, plain, re.I):
+            ctx = plain[max(0, m.start() - LICENCE_WINDOW):m.end() + LICENCE_WINDOW]
+            in_sentence = 0 if re.search(r"licen[cs]", ctx, re.I) else 1
+            groups = tuple(g for g in (m.groups() or ()) if g)
+            lic = form.format(*groups) if groups and "{0}" in form else \
+                ("" if "{0}" in form else form)
+            if not lic:
+                continue
+            hits.append((in_sentence, rank, m.start(), lic,
+                         _licence_sentence(plain, m.start(), m.end())))
+    if not hits:
+        return dict(licence="", quote="",
+                    note=f"the page ({len(plain)} char(s) of text) names no licence this gate can "
+                         f"recognise")
+    hits.sort()
+    _, _, _, lic, quote = hits[0]
+    return dict(licence=lic, quote=quote, note="")
+
+
+def _licence_gate(run: "Run", surface: dict, cand: dict) -> dict:
+    """3 · THE LICENCE READ — HOW this candidate's terms were read, or why they were not.
+
+    req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D. A `kind: listed` candidate is a KNOWN address, so
+    there is no code-host API to publish an spdx_id: `cand['licence']` was empty, every listed
+    candidate evaluated as null, and REFUSED[licence-unreadable] became a BLANKET over the one
+    surface kind that exists for data portals (measured 2026-11-13: GenAge's two zips + MGI's own
+    MGI_GenePheno.rpt, 3/3 refused — one of them with its terms page declared on the candidate).
+
+    THE ORDER IS THE POINT: the run reads, in this order, and stops at the first that answers —
+      1 the surface's own API (`github_search` publishes an spdx_id)      -> how="api"
+      2 the candidate's declared `licence_url`, FETCHED ONCE and hashed   -> how="fetched"
+      3 the OPERATOR's declared `licence:` text, verbatim                 -> how="declared"
+      4 neither                                                          -> how="absent" (the
+        caller REFUSES[licence-unreadable] NAMING BOTH attempted reads, so the refusal keeps its
+        meaning: it is never a blanket and never a cost-free 'no licence'.)
+    A page whose fetch succeeds but names no licence is NOT a reading — it falls through to (3) and
+    then to (4), with the page's own sha256 kept, so 'we looked' stays checkable. `how` therefore
+    answers, in the run record and the report, WHICH of the ways satisfied the gate (fetched ·
+    declared · absent), and `actor` says WHO read it: the machine fetched, a person declared."""
+    sid = str(cand.get("id") or "?")
+    kind = str(surface.get("kind") or "")
+    rec = dict(id=sid, surface=str(cand.get("surface") or surface.get("id") or ""), kind=kind,
+               how="absent", licence="", quote="", actor="", url="", sha256="", note="",
+               tried=[], refusal="")
+    # 1 · THE SURFACE'S OWN API. For a LISTED surface this field is the OPERATOR's declaration
+    # (below), because a listed candidate has no API to ask — the kind decides who wrote it.
+    api = "" if kind == "listed" else (cand.get("licence") or "").strip()
+    if api and api.upper() not in ("NOASSERTION", "NONE"):
+        rec.update(how="api", licence=api, quote=api, actor="machine",
+                   note=f"the surface's own API publishes {api}")
+        run.licence_gate.append(rec)
+        return rec
+    declared = (cand.get("licence") or "").strip() if kind == "listed" else ""
+    # 2 · THE DECLARED TERMS PAGE, FETCHED ONCE. Never a second request for the same candidate.
+    url = (cand.get("licence_url") or "").strip()
+    if url:
+        try:
+            txt = run.get_text(url, note=f"licence page {sid}")
+        except CycleRefused as e:
+            if e.fatal:
+                raise               # the run's own budget: STOP the run, never a per-candidate note
+            rec["tried"].append(dict(attempt="licence_url", url=url,
+                                     result=f"unreadable: {e.code}: {e.detail}"[:300]))
+        except contract.SourceGone as e:
+            # a 404/410 is DATA too (T9): the page is unfetchable, so the gate tries the operator's
+            # words next. Run.get_text does not map this class, and an uncaught 404 here would stop
+            # the whole run on one candidate's dead terms page (FINDING, named in the lane's report).
+            rec["tried"].append(dict(attempt="licence_url", url=url,
+                                     result=f"unreadable: source-gone: {e}"[:300]))
+        else:
+            got = _recognise_licence(txt)
+            rec["tried"].append(dict(attempt="licence_url", url=url,
+                                     result=f"read {len(txt)} byte(s), sha256={_sha_text(txt)}, "
+                                            f"licence {got['licence'] or 'NONE RECOGNISED'}"))
+            if got["licence"]:
+                rec.update(how="fetched", licence=got["licence"], quote=got["quote"],
+                           actor="machine", url=url, sha256=_sha_text(txt),
+                           note=f"the declared licence page was read ONCE and names {got['licence']}")
+                run.licence_gate.append(rec)
+                return rec
+            # fetched, hashed, and it grants nothing we can name: keep the receipt, keep looking
+            rec["url"], rec["sha256"], rec["note"] = url, _sha_text(txt), got["note"]
+    # 3 · THE OPERATOR'S OWN WORDS. A human may read a page this gate cannot parse (or a page that
+    # is not served at all); that reading is recorded VERBATIM and attributed to the operator.
+    if declared:
+        rec.update(how="declared", licence=declared, quote=declared, actor="operator",
+                   sha256=_sha_text(declared),
+                   note=("the operator declared this licence text on the candidate; the declared "
+                         "licence page was read and named no licence, so the operator's words "
+                         "answered" if rec["tried"] else
+                         "the operator declared this licence text on the candidate (no licence "
+                         "page to read)"))
+        run.licence_gate.append(rec)
+        return rec
+    # 4 · NEITHER — and the refusal names BOTH reads it attempted, so the class keeps its meaning.
+    rec["refusal"] = (
+        "attempt 1 (declared licence_url): "
+        + (f"{url} -> {rec['tried'][0]['result']}" if rec["tried"] else
+           "no licence_url on the candidate")
+        + "; attempt 2 (operator-declared licence:): no licence text on the candidate")
+    if not rec["note"]:
+        rec["note"] = "no licence_url and no operator-declared licence text"
+    run.licence_gate.append(rec)
+    return rec
 
 
 def _rel(path: str) -> str:
@@ -276,6 +452,10 @@ class Run:
         self.lines: list[str] = []
         self.found: list[dict] = []
         self.refused: list[dict] = []
+        # THE LICENCE GATE'S OWN LEDGER (req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D): one record per
+        # evaluated candidate saying HOW its terms were read (api · fetched · declared · absent),
+        # by WHOM (machine · operator), with the url and the sha256 of the text actually read.
+        self.licence_gate: list[dict] = []
         self.drafted: list[str] = []
         self.sandboxed: list[dict] = []
         self.carded: list[str] = []
@@ -329,7 +509,8 @@ class Run:
                     wall_s=round(b["wall_s"] - self.fetcher.wall_seconds, 1))
 
     # -- the diary (req-P1-THE-DIARY-appended-by-the-code-nev) ------------------------------
-    def diary(self, cand: dict, event_class: str, why: str, evidence: dict | None = None) -> dict | None:
+    def diary(self, cand: dict, event_class: str, why: str, evidence: dict | None = None,
+              actor: str = "machine") -> dict | None:
         """THE EMISSION HOOK — one line per transition, written where the transition happens.
 
         A CANDIDATE has no dataset identity yet (sources.yml gains it only when the card registers
@@ -344,7 +525,12 @@ class Run:
         stop being a state machine), so the WRITER must not ask twice. The attempt is named (printed
         and in the report) and the ONE event that stands is returned, so no caller can report a
         duplicate as if it were history. The count of the repeats lives in the evidence of that ONE
-        event (`occurrences`), written by `step_discover` from the run's observation ledger."""
+        event (`occurrences`), written by `step_discover` from the run's observation ledger.
+
+        `actor` is `machine` unless a PERSON caused the transition: EVALUATE passes
+        `actor="operator"` for a candidate whose terms were read from the operator's own declared
+        licence text (req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D) — the diary says who decided, and
+        a human's reading is never dressed up as the machine's own."""
         sid = str(cand.get("id") or "?")
         if (sid, event_class) in self.emitted:
             rec = self.observations.get(sid) or {}
@@ -360,7 +546,7 @@ class Run:
         ev.setdefault("source_id_source", "candidate-id: no dataset identity before sources.yml")
         try:
             written = events.append(self.store, event_class, source_id=sid, why=why,
-                                    actor="machine", evidence=ev)
+                                    actor=actor, evidence=ev)
         except events.DiaryRefused as e:
             self.note_refusal(e.code, f"{sid}: the diary refused the '{event_class}' event: {e}")
             self.emitted[(sid, event_class)] = None      # refused once: same state, same answer
@@ -572,12 +758,19 @@ def _refuse_candidate(run: "Run", cand: dict, code: str, detail: str) -> bool:
 
 
 def _evaluate(run: Run, surface: dict, cand: dict) -> bool:
-    """3 · EVALUATE — the rules, each named. Returns True when the candidate survives."""
-    lic = (cand.get("licence") or "").strip()
-    if not lic or lic.upper() in ("NOASSERTION", "NONE"):
+    """3 · EVALUATE — the rules, each named. Returns True when the candidate survives.
+
+    THE LICENCE READ IS THE GATE (req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D): `_licence_gate` reads
+    the surface's API, then the candidate's DECLARED `licence_url` (fetched once, hashed), then the
+    OPERATOR's declared `licence:` text — and only when NEITHER answers is the candidate refused,
+    with BOTH attempted reads named in the refusal. The gate record is kept on the candidate and in
+    the run's ledger, so the report and the run record say WHICH way the terms were read."""
+    gate = _licence_gate(run, surface, cand)
+    cand["licence_gate"] = gate
+    if gate["how"] == "absent":
         return _refuse_candidate(run, cand, "licence-unreadable",
-                         f"{cand['full_name'] or cand['id']}: the API publishes no readable licence "
-                         f"({lic or 'null'}) — terms unread = no data (POLICY-THIRD-PARTY §1)")
+                         f"{cand['full_name'] or cand['id']}: terms unread — {gate['refusal']} — "
+                         f"terms unread = no data (POLICY-THIRD-PARTY §1)")
     if cand.get("archived"):
         return _refuse_candidate(run, cand, "archived",
                          f"{cand['full_name']}: archived upstream — a dependency we could not pin")
@@ -825,7 +1018,9 @@ def step_discover(run: Run, surfaces: list[dict]) -> None:
     A candidate the published seen-set already carried is counted as SEEN and writes NO transition
     at all; the summary says '0 new · N seen', which is the normal, readable result of a quiet
     sweep. A candidate the DIARY already records is treated the same way (the diary is the state
-    machine; a second 'discovered' for it would be exactly the lie this row is about)."""
+    machine; a second 'discovered' for it would be exactly the lie this row is about).
+
+    """
     seen = _seen_load(run)                  # what PREVIOUS runs knew: the re-observation test
     seen_out = open(_seen_path(run), "a", encoding="utf-8") if _ensure_dir(run.state_dir) else None
     observed = run.observations    # THE LEDGER: diary source_id -> one record per run (on the RUN,
@@ -922,7 +1117,10 @@ def step_discover(run: Run, surfaces: list[dict]) -> None:
     candidates: list[dict] = []
     for sid, rec in observed.items():
         state = prior_diary.state_of(sid)
-        if not rec["new"] or state is not None:
+        # RECONSIDERED REOPENS A CANDIDATE (req-P1-RECONSIDERED-MUST-REOPEN-A-CANDIDATE, 2026-11-13): otherwise a refusal is permanent and the fix
+        # that answers it can never be tested. `reconsidered` exists in the table to say "look again"; every other non-None state still skips.
+        reopened = state in ("reconsidered",)
+        if not rec["new"] or (state is not None and not reopened):
             run.seen_again.append(dict(
                 id=sid, occurrences=rec["occurrences"], seen_before=rec["seen_before"],
                 keys=list(rec["keys"]),
@@ -930,28 +1128,46 @@ def step_discover(run: Run, surfaces: list[dict]) -> None:
                      else "the seen-set already carried it")))
             continue
         first = rec["observations"][0] if rec["observations"] else {}
-        run.diary(rec["cand"], "discovered",
-                  f"surface {first.get('surface')}"
-                  + (f" query {first.get('query')!r}" if first.get("query") else "")
-                  + f" returned {rec['cand'].get('full_name') or sid} (run {run.run_id}; observed "
-                    f"{rec['occurrences']} time(s) this run, seen before {rec['seen_before']})",
-                  dict(surface=first.get("surface", ""), query=first.get("query", ""),
-                       url=rec["cand"].get("url", ""), occurrences=rec["occurrences"],
-                       seen_before=rec["seen_before"], keys=list(rec["keys"]),
-                       observations=rec["observations"][:8]))
+        # A REOPENED CANDIDATE IS NOT REDISCOVERED (req-P1-RECONSIDERED-MUST-REOPEN-A-CANDIDATE): the diary's table refuses `discovered` after
+        # `reconsidered`, and rightly so — it was discovered once; what follows a reconsideration is an EVALUATION, recorded by the pipeline below.
+        if state != "reconsidered":
+            run.diary(rec["cand"], "discovered",
+                      f"surface {first.get('surface')}"
+                      + (f" query {first.get('query')!r}" if first.get("query") else "")
+                      + f" returned {rec['cand'].get('full_name') or sid} (run {run.run_id}; observed "
+                        f"{rec['occurrences']} time(s) this run, seen before {rec['seen_before']})",
+                      dict(surface=first.get("surface", ""), query=first.get("query", ""),
+                           url=rec["cand"].get("url", ""), occurrences=rec["occurrences"],
+                           seen_before=rec["seen_before"], keys=list(rec["keys"]),
+                           observations=rec["observations"][:8]))
         candidates.append(rec["cand"])
 
     for cand in candidates:
         run.found.append({k: cand.get(k) for k in ("id", "key", "full_name", "url", "licence",
                                                    "surface", "count_endpoint")})
         if not _evaluate(run, _surface_of(surfaces, cand["surface"]), cand):
+            # the gate ran even when a LATER rule refused it: the record still says how the terms
+            # were read, so 'refused' never hides a licence the run actually read (row DELIVER 4).
+            gate = cand.get("licence_gate") or {}
+            run.found[-1].update(licence=gate.get("licence") or cand.get("licence") or "",
+                                 licence_how=gate.get("how", ""),
+                                 licence_actor=gate.get("actor", ""))
             continue
+        gate = cand.get("licence_gate") or {}
+        run.found[-1].update(licence=gate.get("licence") or cand.get("licence") or "",
+                             licence_how=gate.get("how", ""),
+                             licence_actor=gate.get("actor", ""))
         run.diary(cand, "evaluated",
-                  f"licence {cand.get('licence') or '(unreadable)'} read, count endpoint "
+                  f"licence {gate.get('licence') or '(unreadable)'} read ({gate.get('how')} by "
+                  f"{gate.get('actor')}: {str(gate.get('quote') or '')[:100]!r}), count endpoint "
                   f"{cand.get('count_endpoint')}, rate limit fits the run's budget, neither "
                   f"archived nor dead — the candidate survives EVALUATE (run {run.run_id})",
-                  dict(licence=cand.get("licence"), count_endpoint=cand.get("count_endpoint"),
-                       rate_limit=cand.get("rate_limit") or {}, surface=cand.get("surface")))
+                  dict(licence=gate.get("licence") or cand.get("licence"),
+                       licence_gate={k: gate.get(k) for k in ("how", "actor", "url", "sha256",
+                                                              "quote", "licence")},
+                       count_endpoint=cand.get("count_endpoint"),
+                       rate_limit=cand.get("rate_limit") or {}, surface=cand.get("surface")),
+                  actor=gate.get("actor") or "machine")
         _step_pipeline(run, cand)
     run.steps_done.append(f"pipeline({len(run.drafted)} drafted, {len(run.sandboxed)} sandboxed, "
                           f"{len(run.carded)} carded, {len(run.admitted)} admitted, "
@@ -983,6 +1199,16 @@ def _bullets(items: list[str]) -> list[str]:
     return items or ["- none"]
 
 
+def _gate_counts(rows: list[dict]) -> str:
+    """WHICH of the ways satisfied the licence gate, counted: fetched · declared · absent (+ api
+    when a code-host surface published an spdx_id). The three the row names come first and are
+    always printed — a zero is an answer too."""
+    n = {k: sum(1 for r in rows if r.get("how") == k)
+         for k in ("fetched", "declared", "absent", "api")}
+    out = (f"fetched {n['fetched']} \u00b7 declared {n['declared']} \u00b7 absent {n['absent']}")
+    return out + (f" \u00b7 api {n['api']}" if n["api"] else "")
+
+
 def write_report(run: Run) -> str:
     """The CYCLE-REPORT: found · refused (rule named) · drafted · sandboxed · admitted · cost, and
     the "I looked" line — printed on a quiet week too, because a cycle that changes nothing is
@@ -1007,8 +1233,23 @@ def write_report(run: Run) -> str:
          "",
          f"## found — {len(run.found)} candidate(s)"]
     L += _bullets([f"- `{c['id']}` — {c.get('full_name') or c.get('url')} (licence "
-                   f"{c.get('licence') or 'n/a'}, surface `{c.get('surface')}`)"
+                   f"{c.get('licence') or 'UNREAD'} via {c.get('licence_how') or 'not evaluated'}"
+                   f", surface `{c.get('surface')}`)"
+
                    for c in run.found])
+    L += ["", f"## licence gate — {len(run.licence_gate)} candidate(s) ({_gate_counts(run.licence_gate)})",
+          "each line names HOW the terms were read: `api` (the surface's own spdx_id) · `fetched` "
+          "(the candidate's declared licence_url, read ONCE, url + sha256 on record) · `declared` "
+          "(the OPERATOR's own words, verbatim, sha256 on record) · `absent` (neither — "
+          "REFUSED[licence-unreadable], naming BOTH attempted reads)"]
+    L += _bullets([f"- `{g['id']}` — **{g['how']}** by {g['actor'] or 'nobody'} · licence "
+                   f"`{g['licence'] or '(none)'}`"
+                   + (f" · page `{g['url']}` sha256={g['sha256']}" if g["url"] and g["sha256"] else
+                      (f" · text sha256={g['sha256']}" if g["sha256"] else ""))
+                   + (f" · quote: \u201c{g['quote'][:200]}\u201d" if g["quote"] else "")
+                   + (f" · {g['note']}" if g["note"] and g["how"] != "absent" else "")
+                   + (f" · attempts: {g['refusal']}" if g["how"] == "absent" else "")
+                   for g in run.licence_gate])
     L += ["", f"## seen again — {len(run.seen_again)} (a re-observation is NOT a transition, so no "
                f"event was written)"]
     L += _bullets([f"- `{s['id']}` seen {s['occurrences']}× this run (seen before: "
@@ -1059,6 +1300,7 @@ def write_record(run: Run, outcome: str) -> str:
                looked=run.looked, cost=run.cost, budget=run.cfg["budget"],
                budget_left=run.budget_left,
                found=run.found, refused=run.refused, drafted=run.drafted,
+               licence_gate=run.licence_gate,
                seen_again=run.seen_again, reobserved=run.reobserved,
                sandboxed=run.sandboxed, carded=run.carded, admitted=run.admitted,
                proposed=run.proposed, queries=run.queries, telemetry=run.telemetry)
@@ -1209,6 +1451,16 @@ def selftest() -> int:
              "Epcam\tMGI:106653\t17\t87652551\t87659529\n")
     LICENCE = ("<html><body>CC0 1.0 Universal — public domain dedication. You may store and "
                "redistribute this data.</body></html>")
+    # A9's two pages: one that GRANTS a licence in a licensing sentence, and one that talks about
+    # permissions and grants nothing (the gate must not turn 'we fetched a page' into a reading).
+    LICENCE_CCBY4 = ("<html><body><h3>Warranty Disclaimer</h3>"
+                     "<p>MGI data and annotations are licensed under a Creative Commons "
+                     "Attribution 4.0 International License (CC-BY).</p>"
+                     "<p>Images are the copyrighted work of the attributed author.</p>"
+                     "</body></html>")
+    LICENCE_NONE = ("<html><body><h3>Privacy Notice</h3><p>This site uses cookies. Some are "
+                    "required for basic operation and you cannot opt out.</p>"
+                    "<p>Usage is logged to generate summary statistics.</p></body></html>")
     SEARCH = dict(total_count=0, items=[])
 
     class H(BaseHTTPRequestHandler):
@@ -1230,6 +1482,10 @@ def selftest() -> int:
         def do_GET(self):
             if self.path.startswith("/genes"):
                 self._s(GENES, "text/tab-separated-values")
+            elif self.path.startswith("/licence-ccby4"):       # A9: a page that DOES name a licence
+                self._s(LICENCE_CCBY4, "text/html")
+            elif self.path.startswith("/licence-nolicence"):    # A9: a page that grants nothing
+                self._s(LICENCE_NONE, "text/html")
             elif self.path.startswith("/licence"):
                 self._s(LICENCE, "text/html")
             elif self.path.startswith("/count-bad"):
@@ -1526,6 +1782,93 @@ def selftest() -> int:
         check("A8 the diary's TABLE is unchanged and still refuses discovered->discovered",
               still_refused, "the table refused the planted duplicate" if still_refused
               else "THE TABLE ACCEPTED A DUPLICATE — it was loosened")
+
+        # ══ A9 · A LISTED CANDIDATE READS ITS DECLARED LICENCE ═════════════════════════════════
+        # req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D. Measured 2026-11-13 against the aging-gene-list
+        # registry: a `kind: listed` surface names KNOWN addresses, so no code host publishes an
+        # spdx_id for them and `cand['licence']` was empty for all three — GenAge's two zips AND
+        # MGI's own file, the one whose terms page was declared. 3/3 REFUSED[licence-unreadable],
+        # which is a blanket over the one surface kind that exists for data portals. The gate now
+        # reads, in order: the surface's API · the declared `licence_url` (fetched ONCE, hashed) ·
+        # the OPERATOR's declared `licence:` text · and only then refuses, naming BOTH attempts.
+        print("\nA9 a listed candidate reads its declared licence — fetched · declared · absent, "
+              "each NAMED in the run record", flush=True)
+        tmp = os.path.join(tmpdir, "a9")
+        declared_text = "CC BY 3.0 Unported — read by the operator on the portal's terms page"
+        cands9 = [
+            dict(id="gate_fetched", url=f"{base}/genes.tsv",
+                 licence_url=f"{base}/licence-ccby4", count_endpoint=f"{base}/count"),
+            dict(id="gate_declared", url=f"{base}/genes.tsv", licence=declared_text,
+                 count_endpoint=f"{base}/count"),
+            dict(id="gate_unparsed", url=f"{base}/genes.tsv",
+                 licence_url=f"{base}/licence-nolicence",
+                 licence="CC0 1.0 — declared after reading the portal's downloads page",
+                 count_endpoint=f"{base}/count"),
+            dict(id="gate_absent", url=f"{base}/genes.tsv", count_endpoint=f"{base}/count"),
+            dict(id="gate_404", url=f"{base}/genes.tsv", licence_url=f"{base}/nothing",
+                 count_endpoint=f"{base}/count"),
+        ]
+        tree(tmp, surf_yaml=yaml.safe_dump(dict(version=1, surfaces=[
+            dict(id="fixture-listed", kind="listed", candidates=cands9)]), sort_keys=False),
+             budget=(16, 4000000, 120))
+        p = cycle(tmp)
+        rep9 = "\n".join(open(f, encoding="utf-8").read()
+                         for f in glob.glob(os.path.join(tmp, "reports", "*.md")))
+        rec9 = json.load(open(os.path.join(tmp, "store", "cycle", "last.json"), encoding="utf-8"))
+        gate9 = {g["id"]: g for g in rec9.get("licence_gate") or []}
+        page9 = LICENCE_CCBY4.encode()
+        check("A9 the declared licence page is FETCHED and its licence recognised",
+              gate9.get("gate_fetched", {}).get("how") == "fetched"
+              and gate9["gate_fetched"].get("licence") == "CC-BY-4.0",
+              json.dumps({k: (v.get("how"), v.get("licence")) for k, v in gate9.items()}))
+        check("A9 the fetch is recorded with its URL and the sha256 of the bytes read",
+              gate9.get("gate_fetched", {}).get("url") == f"{base}/licence-ccby4"
+              and gate9["gate_fetched"].get("sha256") == hashlib.sha256(page9).hexdigest(),
+              f"sha256={str(gate9.get('gate_fetched', {}).get('sha256'))[:16]}…")
+        check("A9 the page's OWN sentence is quoted (the machine's reading is checkable)",
+              "licensed under a Creative Commons Attribution 4.0"
+              in gate9.get("gate_fetched", {}).get("quote", ""),
+              repr(gate9.get("gate_fetched", {}).get("quote", "")[:100]))
+        check("A9 an operator-declared licence text satisfies the gate, actor=operator + sha256",
+              gate9.get("gate_declared", {}).get("how") == "declared"
+              and gate9["gate_declared"].get("actor") == "operator"
+              and gate9["gate_declared"].get("sha256")
+              == hashlib.sha256(declared_text.encode()).hexdigest(),
+              f"actor={gate9.get('gate_declared', {}).get('actor')}")
+        check("A9 a declared text is recorded VERBATIM (not normalised)",
+              gate9.get("gate_declared", {}).get("licence") == declared_text)
+        check("A9 the diary's 'evaluated' line for it says actor=operator",
+              any(e.get("actor") == "operator" and e.get("class") == "evaluated"
+                  for e in events.read(os.path.join(tmp, "store")).events),
+              str([(e.get("source_id"), e.get("class"), e.get("actor"))
+                   for e in events.read(os.path.join(tmp, "store")).events]))
+        check("A9 a page that names no licence is NOT a reading — the declared text answers",
+              gate9.get("gate_unparsed", {}).get("how") == "declared"
+              and gate9["gate_unparsed"].get("sha256")
+              == hashlib.sha256("CC0 1.0 — declared after reading the portal's downloads page"
+                                .encode()).hexdigest())
+        absent9 = re.search(r"REFUSED\[licence-unreadable\] gate_absent: (.+)", p.stdout)
+        check("A9 nothing declared -> REFUSED[licence-unreadable] naming BOTH attempts",
+              absent9 is not None
+              and "attempt 1 (declared licence_url): no licence_url on the candidate"
+              in absent9.group(1)
+              and "attempt 2 (operator-declared licence:): no licence text on the candidate"
+              in absent9.group(1),
+              absent9.group(1)[:220] if absent9 else "(no refusal line)")
+        dead9 = re.search(r"REFUSED\[licence-unreadable\] gate_404: (.+)", p.stdout)
+        check("A9 an unreachable licence page is named WITH ITS URL (not a blanket refusal)",
+              dead9 is not None and f"{base}/nothing" in dead9.group(1)
+              and "attempt 2 (operator-declared licence:)" in dead9.group(1),
+              dead9.group(1)[:220] if dead9 else "(no refusal line)")
+        check("A9 the gate that answered lets the candidate through (PROPOSED, not refused)",
+              "PROPOSED  gate_fetched" in p.stdout
+              and "PROPOSED  gate_declared" in p.stdout
+              and "PROPOSED  gate_unparsed" in p.stdout)
+        check("A9 the report counts fetched · declared · absent and shows url + sha256 + quote",
+              "## licence gate" in rep9 and "fetched 1 · declared 2 · absent 2" in rep9
+              and f"page `{base}/licence-ccby4` sha256=" in rep9
+              and "licensed under a Creative Commons Attribution 4.0" in rep9,
+              next((l for l in rep9.splitlines() if l.startswith("## licence gate")), "(none)"))
 
         # ══ G4 · THE RATE LIMIT DOES NOT FIT THE BUDGET (DESIGN §3 step 3) ═══════════════════
         print("\nG4 a source whose own rate needs more wall clock than the run has left — "

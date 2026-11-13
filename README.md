@@ -90,7 +90,8 @@ same interface, one switch apart. A run that finds nothing says so in words: *"I
 The machine is driven by files, not by a daemon, so anything that can write a file can orchestrate it: a cron line, a CI job, an agent, another station.
 
 ```
-surfaces registry   WHERE it may look            (a text file you own; no registry ⇒ REFUSED[no-surfaces])
+surfaces registry   WHERE it may look            (a text file you own; no registry ⇒ REFUSED[no-surfaces]; today the cycle reads two kinds only —
+                                                 `github_search` and `listed` — anything else is REFUSED[surface-kind-unknown])
 research spec       WHAT a question requires     (arms · filters · required/optional datasets; hashed into the run record)
 cycle.yml           HOW FAR it may go            (mode · cadence · budget · admit default)
 sources.yml         WHAT it may fetch            (per-source licence, rate limit, budget, enabled)
@@ -303,6 +304,10 @@ Any MCP server that exposes a **count** can be pointed at like any other source 
 ships one pinned example: `@cyanheads/pubmed-mcp-server` 2.12.0, consumed over stdio as the literature arm. The rule is the same as for every source: *a
 tool that cannot say how many records it has is a tool, not a source* — `REFUSED[no-count-endpoint]`. That single rule is why a repository is refused as a
 source and an MCP that answers "0 of 399" is accepted.
+
+**What an MCP is *not* (yet): a discovery surface.** Putting a server in the *registry* (so the sentinel searches through it) is not supported — the cycle
+reads only `github_search` and `listed` registries and answers `REFUSED[surface-kind-unknown]` to anything else. A server that can *find* things is a
+different question from a server that can *count* them, and the station keeps the two apart on purpose.
 
 ### Who is the consumer?
 
