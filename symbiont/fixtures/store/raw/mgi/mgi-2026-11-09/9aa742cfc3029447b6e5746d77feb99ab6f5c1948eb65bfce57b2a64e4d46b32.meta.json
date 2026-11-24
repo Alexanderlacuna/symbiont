@@ -1,0 +1,13 @@
+{
+  "bytes": 594,
+  "etag": "",
+  "fetched_at": "2026-11-10T11:55:29.173685+00:00",
+  "filename": "mrk_ensembl.rpt",
+  "last_modified": "Mon, 09 Nov 2026 21:00:00 GMT",
+  "release": "mgi-2026-11-09",
+  "reskey": "mrk_ensembl",
+  "run_id": "arc-1",
+  "sha256": "9aa742cfc3029447b6e5746d77feb99ab6f5c1948eb65bfce57b2a64e4d46b32",
+  "source": "mgi",
+  "url": "http://127.0.0.1:42997/reports/MRK_ENSEMBL.rpt"
+}

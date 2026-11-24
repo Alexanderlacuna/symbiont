@@ -1,0 +1,22 @@
+"""A PLANTED SECOND WRITER — the negative control for the evaluator's boundary scan.
+
+This file is NOT imported and NOT shipped as a module (it ends in .txt on purpose). It exists so
+that selftest_source_spec.py's scan_module() is shown to be able to FAIL: if a future edit ever
+gives the evaluator a write path, or a diary event, this is what such a file looks like — and the
+scan names every offending line rather than passing it.
+"""
+from __future__ import annotations
+
+import os
+
+from . import diary
+
+
+def admit(store, source_id, release):
+    """The path this row says must not exist: a verdict that turns itself into an `admitted`
+    event. The scan must catch all three markers below (the import, the call, and the write)."""
+    with open(os.path.join(store, "source-events.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write('{"class": "admitted"}\n')
+    return diary.append(store, "admitted", source_id=source_id, release=release,
+                        actor="machine", why="the evaluator admitted it", evidence={},
+                        origin="live")

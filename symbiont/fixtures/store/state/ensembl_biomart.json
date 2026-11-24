@@ -1,0 +1,26 @@
+{
+  "etags": {
+    "biomart_tsv": ""
+  },
+  "licence": {
+    "name": "Ensembl data: no restrictions on access or use",
+    "quote": "Ensembl imposes no restrictions on access to, or use of, the data provided and the software used to analyse and present it.",
+    "reused_from": "arc-1",
+    "terms_sha256": "b820b7540f6387b334e2f6e30eb8fc9cd3763cf201b4b6013a4595bd03ce2511",
+    "url": "http://127.0.0.1:42997/ensembl/licence.html"
+  },
+  "published_count": 5,
+  "release": "ensembl-116",
+  "release_at": "2026-11-10T11:55:29.160612+00:00",
+  "run_id": "arc-2",
+  "snapshots": {
+    "biomart_tsv": {
+      "bytes": 313,
+      "path": "/tmp/symbiont-arc-c0auwtd6/store/raw/ensembl_biomart/ensembl-116/dff2a0bfd86c0affe34c4902b61d195596c9e415f43d14380d2be696a2133ad9.tsv",
+      "release": "ensembl-116",
+      "sha256": "dff2a0bfd86c0affe34c4902b61d195596c9e415f43d14380d2be696a2133ad9",
+      "url": "http://127.0.0.1:42997/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+    }
+  },
+  "updated_at": "2026-11-10T11:55:29.269887+00:00"
+}

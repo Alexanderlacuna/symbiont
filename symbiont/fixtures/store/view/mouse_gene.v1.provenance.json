@@ -1,0 +1,89 @@
+{
+  "findings": [],
+  "generated_at": "2026-11-10T11:55:29.368693+00:00",
+  "rows": 5,
+  "run_id": "arc-3",
+  "schema_sha256": "c985bdd5e515e3268fbb39b8e81bf482f362e4aed102d855a7a61bc080724a5a",
+  "skipped": {},
+  "sources": {
+    "ensembl_biomart": {
+      "licence": {
+        "name": "Ensembl data: no restrictions on access or use",
+        "quote": "Ensembl imposes no restrictions on access to, or use of, the data provided and the software used to analyse and present it.",
+        "reused_from": "arc-2",
+        "terms_sha256": "b820b7540f6387b334e2f6e30eb8fc9cd3763cf201b4b6013a4595bd03ce2511",
+        "url": "http://127.0.0.1:42997/ensembl/licence.html"
+      },
+      "published_count": 5,
+      "release": "ensembl-116",
+      "snapshots": {
+        "biomart_tsv": {
+          "bytes": 313,
+          "path": "/tmp/symbiont-arc-c0auwtd6/store/raw/ensembl_biomart/ensembl-116/dff2a0bfd86c0affe34c4902b61d195596c9e415f43d14380d2be696a2133ad9.tsv",
+          "release": "ensembl-116",
+          "sha256": "dff2a0bfd86c0affe34c4902b61d195596c9e415f43d14380d2be696a2133ad9",
+          "url": "http://127.0.0.1:42997/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+        }
+      },
+      "stale": {
+        "age_days": 0.0,
+        "finding": "",
+        "policy_days": 120,
+        "release_at": "2026-11-10T11:55:29.160612+00:00",
+        "stale": false,
+        "stale_since": null,
+        "stored_release": "ensembl-116",
+        "upstream_moved": false,
+        "upstream_release": "ensembl-116"
+      },
+      "url": [
+        "http://127.0.0.1:42997/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+      ]
+    },
+    "mgi": {
+      "licence": {
+        "name": "MGI data and annotations: CC-BY 4.0 (attribution required)",
+        "quote": "MGI data and annotations are licensed under a Creative Commons Attribution 4.",
+        "reused_from": "arc-2",
+        "terms_sha256": "20b901db07f273b4743e4be03f101deecce68b867df3b236347357da12a07048",
+        "url": "http://127.0.0.1:42997/reports/licence.html"
+      },
+      "published_count": null,
+      "release": "mgi-2026-11-09",
+      "snapshots": {
+        "mrk_ensembl": {
+          "bytes": 594,
+          "path": "/tmp/symbiont-arc-c0auwtd6/store/raw/mgi/mgi-2026-11-09/9aa742cfc3029447b6e5746d77feb99ab6f5c1948eb65bfce57b2a64e4d46b32.rpt",
+          "release": "mgi-2026-11-09",
+          "sha256": "9aa742cfc3029447b6e5746d77feb99ab6f5c1948eb65bfce57b2a64e4d46b32",
+          "url": "http://127.0.0.1:42997/reports/MRK_ENSEMBL.rpt"
+        },
+        "mrk_list1_gz": {
+          "bytes": 264,
+          "path": "/tmp/symbiont-arc-c0auwtd6/store/raw/mgi/mgi-2026-11-09/405f73c0128841a694deb54bcd7797ef5935f0bb603ff95bb1fe3cddc3404633.rpt.gz",
+          "release": "mgi-2026-11-09",
+          "sha256": "405f73c0128841a694deb54bcd7797ef5935f0bb603ff95bb1fe3cddc3404633",
+          "url": "http://127.0.0.1:42997/reports/MRK_List1.rpt.gz"
+        }
+      },
+      "stale": {
+        "age_days": 0.0,
+        "finding": "",
+        "policy_days": 120,
+        "release_at": "2026-11-10T11:55:29.170143+00:00",
+        "stale": false,
+        "stale_since": null,
+        "stored_release": "mgi-2026-11-09",
+        "upstream_moved": false,
+        "upstream_release": "mgi-2026-11-09"
+      },
+      "url": [
+        "http://127.0.0.1:42997/reports/MRK_ENSEMBL.rpt",
+        "http://127.0.0.1:42997/reports/MRK_List1.rpt.gz"
+      ]
+    }
+  },
+  "version": 1,
+  "view": "mouse_gene",
+  "view_sha256": "153b8f1c224a509cdb8b55e5ee21bfef81b8aa9f74f46c26a8d693f947b17a4b"
+}

@@ -1,0 +1,55 @@
+# THE RESEARCH SPEC FOR THE MOUSE→HUMAN JOIN (req-P1-E1-c-THE-MOUSE-HUMAN-JOIN-AND-THE-LITERATURE).
+#
+# This is the DEPENDENCY DECLARATION of view/aging_ortholog.v1.tsv: the two datasets the join
+# cannot be built without, in the one place `research_check` reads. It carries REQUIREMENTS ONLY —
+# no release id (a release smuggled in here would be refused by name, and it is resolved at run time
+# and recorded in the view's provenance sidecar instead).
+#
+# WHAT IT IS FOR. NSC (e) of the row: "research_check names the datasets this view depends on and
+# refuses when one is absent". The refusal is not this file's opinion — it is symbiont/research.py's
+# coverage() (the farm's ONE coverage evaluator, which the MCP door research_check calls), and the
+# two commands that prove it are in the lane report:
+#
+#     python3 -m symbiont.research --check symbiont/research/aging-ortholog.yml \
+#         (paste the mapping blocks from docs/EXAMPLES.md into sources.yml first) --store symbiont/store   # exit 0
+#     python3 -m symbiont.research --check symbiont/research/aging-ortholog.yml \
+#         --sources-config <a copy with genage_models removed> --store symbiont/store        # exit 4
+#
+# AND THE FACT A READER SHOULD SEE: the aging arm's two sources are admitted in
+# the shipped default sources.yml, NOT a separate config (mappings compile from one definition site)ymbiont/sources.yml. Against
+# the default registry this spec is REFUSED[missing-dataset] with status `not-admitted` for both —
+# which is the gate doing its job, not a bug in this file.
+
+research_id: aging-ortholog
+question: Which GenAge model-organism aging genes have a human ortholog that MGI's HOM table states, and how many map one-to-many or not at all?
+version: 1
+
+# ALL THREE arms are DECLARED — an arm this investigation does not do is `null`, never omitted.
+arms:
+  gene_identity: "Join GenAge's aging-gene rows to MGI's HOM_MouseHumanSequence by EntreZ id, one row per (GenAge row, human HGNC id)."
+  literature: "Attach the paper list the literature arm has ALREADY published per gene (gene_publication.v2, bounded by its own per_gene_cap) — this spec does not search, and a zero means the store holds none."
+  phenotype_ontology: null    # disease and phenotype terms are out of scope for this row
+
+filters:
+  species: Mus musculus
+  term_sets:
+    gene_identity: []
+    literature: []
+    phenotype_ontology: []
+  date_cutoff: null
+
+# THE TWO DATASETS THE VIEW CANNOT BE BUILT WITHOUT, named by REGISTRY ID (sources.yml id) rather
+# than by `<publisher>:<dataset>` — and that is a finding, not a preference: the two configs in this
+# farm that admit mgi_ortholog disagree about its dataset name (`mgi:ortholog` in store/sources.yml,
+# the id the published view's own provenance carries; `mgi:HOM_MouseHumanSequence` in
+# the shipped sources.yml). A spec that named the publisher:dataset form would resolve in one
+# config and refuse in the other for a reason that has nothing to do with this view's coverage. The
+# source id is the name both configs agree on.
+required_datasets:
+  - genage_models
+  - mgi_ortholog
+
+# WANTED, NOT REQUIRED — nothing: the literature arm is a separate contract (symbiont/literature/
+# sources.yml), not a gene-arm registry entry, so it is named in arms.literature above rather than
+# smuggled into this list as a dataset that would then look fetchable here.
+optional_datasets: []

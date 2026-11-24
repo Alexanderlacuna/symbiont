@@ -1,0 +1,44 @@
+{
+  "N": 2,
+  "admission_id": "admit-20261110T091024Z",
+  "at": "2026-11-10T09:10:24+00:00",
+  "by": "policy",
+  "card": "/home/kabui/app-farm/harvester/fixtures/admission-policy/card-fixture_trial.md",
+  "card_changed": "trial complete, every card check green",
+  "checks": {
+    "cost": "ok",
+    "count_match": "ok",
+    "licence": "ok",
+    "sample_rows": "ok",
+    "xref_rate": "ok"
+  },
+  "decision": "self-admitted",
+  "line": "self-admitted by policy, rule stable_cycles_before_self_admit, N=2",
+  "policy": {
+    "numbers": {
+      "card_checks_required": [
+        "licence",
+        "count_match",
+        "sample_rows",
+        "xref_rate",
+        "cost"
+      ],
+      "licence_must_be_read": true,
+      "max_new_sources_per_cycle": null,
+      "max_sources_active": null,
+      "quarantine_after_count_mismatches": 2,
+      "quarantine_after_rate_breach": true,
+      "stable_cycles_before_self_admit": 2
+    },
+    "path": "/home/kabui/app-farm/harvester/fixtures/admission-policy/policy-n2.yml",
+    "sha256": "a40414034015518bc38e563505a135d6b4febb3e9ae31bf50779d2fd9966ddce"
+  },
+  "rule": "stable_cycles_before_self_admit",
+  "source": "fixture_trial",
+  "stable_cycle_runs": [
+    "cycle-1",
+    "cycle-2",
+    "cycle-3"
+  ],
+  "stable_cycles": 3
+}

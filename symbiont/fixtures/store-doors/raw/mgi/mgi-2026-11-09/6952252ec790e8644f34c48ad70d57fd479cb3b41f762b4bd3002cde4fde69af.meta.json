@@ -1,0 +1,13 @@
+{
+  "bytes": 81865,
+  "etag": "",
+  "fetched_at": "2026-11-10T13:13:28.049654+00:00",
+  "filename": "mrk_ensembl.rpt",
+  "last_modified": "Mon, 09 Nov 2026 21:27:45 GMT",
+  "release": "mgi-2026-11-09",
+  "reskey": "mrk_ensembl",
+  "run_id": "doors-fixture-1",
+  "sha256": "6952252ec790e8644f34c48ad70d57fd479cb3b41f762b4bd3002cde4fde69af",
+  "source": "mgi",
+  "url": "http://127.0.0.1:37717/reports/MRK_ENSEMBL.rpt"
+}

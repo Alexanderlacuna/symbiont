@@ -1,0 +1,51 @@
+# LITERATURE SOURCES — the ONE definition site for the literature arm (its own contract:
+# symbiont/literature/contract.py::load_sources, separate from the gene arm's sources.yml,
+# because the gene arm's registry admits only id_authority/xref_provider roles).
+#
+#   mcp.version   an EXACT pin (no caret): the adapter parses the server's markdown tool output,
+#                 so the pin IS the contract. The client (symbiont/literature/mcp.py) verifies
+#                 the installed package.json against this pin BY NAME before a call leaves the
+#                 box, and refuses to run against anything else.
+#   query         the per-gene search; {SYM} is replaced by the gene symbol. mouse[MeSH Terms] is
+#                 NCBI's CURATED species filter — the survey proved this leg live (the tool's own
+#                 count 399 == NCBI's own <Count>399</Count>), and it is far more precise than
+#                 EuropePMC's text-mined SPECIES filter.
+#   per_gene_cap  first page only: we take at most this many of the source's own hits per gene,
+#                 and the run record quotes how many were beyond the cap. No pagination is
+#                 written — that is the server's job.
+#   gene_scope    the genes of this first slice. The join is KEYED BY THE XREF TABLE: each symbol
+#                 must exist as an 'ok' row in the gene arm's store/xref/xref.tsv (both ids are
+#                 read from there), and a scope gene missing from the xref table is refused by
+#                 name before a single request leaves the box.
+#
+# Licence terms of the data: EuropePMC records carry their OWN licence; this arm stores an
+# abstract only when that licence is in abstract_licence_whitelist, and every other record is
+# stored accession-only WITH THE REASON. The site-level terms are read at run time from
+# licence_url and hashed (the loop refuses to ingest under terms it could not read).
+
+version: 1
+
+sources:
+  - id: pubmed
+    adapter: pubmed
+    enabled: true
+    note: "the literature source: NCBI-PubMed search (curated MeSH species filter) + EuropePMC records (title, journal, year, DOI, per-record licence, complete abstract), both legs of the ONE pinned MCP server. No E-utilities client, no pagination, no retry, no 429 logic is written by this farm — the server owns all of that."
+    mcp:
+      package: "@cyanheads/pubmed-mcp-server"
+      version: "2.12.0"
+      install: "mcp-server"
+      server_entry: "node_modules/@cyanheads/pubmed-mcp-server/dist/index.js"
+      call_timeout_s: 180
+    query: "{SYM}[Title] AND mouse[MeSH Terms]"
+    per_gene_cap: 5
+    gene_scope: [Brca1, Pax6, Wt1]
+    abstract_licence_whitelist: ["cc by", "cc0"]
+    licence_url: https://www.ebi.ac.uk/about/terms-of-use
+    licence_text: "EuropePMC (EMBL-EBI): per-record rights prevail — 'The original data may be subject to rights claimed by third parties'; abstracts stored only under the record's own whitelisted licence"
+    terms_pattern: "The original data may be subject to rights claimed by third parties[^<]*"
+    budget:
+      tool_calls: 40
+      wall_s: 900
+    fulltext:
+      enabled: true
+      note: "the claim-driven fulltext leg (req-P1-AN-ABSTRACT-CANNOT-CARRY-A-CLAIM-that): the loop itself never fetches full text — an upgrade happens only when a fulltext-kind claim demands the record (python3 -m symbiont.literature.evidence fetch-fulltext <pmid>), through the pinned MCP's OWN open-access chain (PMC EFetch -> EuropePMC fullTextXML -> Unpaywall) and only under the record's own whitelisted licence. No bespoke client, no bot-detection bypass. The Unpaywall tier stays CLOSED until the deployment exports UNPAYWALL_EMAIL (the server skips the tier by name); the Unpaywall API itself refuses generic emails (422 'Please use your own email address'). enabled:false switches the whole leg off by name."

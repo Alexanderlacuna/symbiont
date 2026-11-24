@@ -1,0 +1,2 @@
+pmid	doi	title	year	journal	pmcid	open_access	licence	abstract	abstract_withheld_reason	source_release	first_seen_run
+99992001	10.0/fixture.no-level.1	A fixture record with no evidence_level.	2024	Fixture Journal		yes		A fixture abstract.		2026-11-10 + @cyanheads/pubmed-mcp-server@2.12.0	fixture

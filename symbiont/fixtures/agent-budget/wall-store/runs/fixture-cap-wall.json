@@ -1,0 +1,94 @@
+{
+  "agent_tasks": [
+    {
+      "caps": {
+        "max_calls": 80,
+        "max_rounds": 20,
+        "max_wall_s": 1,
+        "no_progress_rounds": 3
+      },
+      "exit": "refused",
+      "policy": {
+        "path": "/home/kabui/app-farm/symbiont/fixtures/agent-budget/wall-policy.yml",
+        "sha256": "c287318245a76ca737f5446803dd741de09c7a352f950caecd4345ae97d11b1e"
+      },
+      "refused": {
+        "code": "cap-wall",
+        "reason": "wall 1.201s exceeds the declared cap agent_max_wall_s=1 at round 3"
+      },
+      "rounds": [
+        {
+          "bytes": 10,
+          "calls": 1,
+          "new_accession_ids": [
+            "acc-0"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "progress, but slow",
+          "round": 1,
+          "tokens": 0,
+          "wall_seconds": 0.4
+        },
+        {
+          "bytes": 10,
+          "calls": 1,
+          "new_accession_ids": [
+            "acc-1"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "progress, but slow",
+          "round": 2,
+          "tokens": 0,
+          "wall_seconds": 0.4
+        },
+        {
+          "bytes": 10,
+          "calls": 1,
+          "new_accession_ids": [
+            "acc-2"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "progress, but slow",
+          "round": 3,
+          "tokens": 0,
+          "wall_seconds": 0.401
+        }
+      ],
+      "task": "fixture:cap-breach-wall",
+      "totals": {
+        "bytes": 30,
+        "calls": 3,
+        "new_accessions": 3,
+        "new_records": 0,
+        "rounds": 3,
+        "tokens": 0,
+        "wall_seconds": 1.201
+      }
+    }
+  ],
+  "cost": {
+    "bytes_in": 30,
+    "new_accessions": 3,
+    "new_records": 0,
+    "note": "the manifest's own cost shape (requests/bytes_in/wall_seconds), extended to agent tasks with tokens/rounds/new_accessions/new_records",
+    "requests": 3,
+    "rounds": 3,
+    "tokens": 0,
+    "wall_seconds": 1.201
+  },
+  "finished_at": "2026-11-10T12:00:38.334604+00:00",
+  "kind": "agent-task",
+  "question": "agent-budget fixture",
+  "refusals": [
+    {
+      "code": "cap-wall",
+      "reason": "wall 1.201s exceeds the declared cap agent_max_wall_s=1 at round 3"
+    }
+  ],
+  "run_id": "fixture-cap-wall",
+  "started_at": "2026-11-10T12:00:37.133216+00:00",
+  "task": "fixture:cap-breach-wall"
+}
