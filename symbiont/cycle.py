@@ -1,0 +1,2892 @@
+"""THE SENTINEL CYCLE — symbiont/cycle.py (req-P1-THE-SENTINEL-CYCLE-the-stations-own, 2026-11-11).
+
+Design: reports/DESIGN-SENTINEL.md. Config: symbiont/cycle.yml (shipped `enabled: false`).
+
+WHY THIS FILE EXISTS. Every organ of the station was built and tested — the four digests (41 KB),
+health (26 KB), the admission policy (20/20 fixtures), the sandbox (17/17), the logged discovery
+sweep (12 KB) — and NOTHING ran them as one bounded loop, so the station could not keep itself
+current without a hand. This file is that loop and nothing else: it ORCHESTRATES the tested CLIs in
+one order, on one budget, and writes one report. The steps are the tested code, called as the words
+an operator would type (`python3 -m symbiont.admission …`), so the cycle and the tools can never
+drift apart.
+
+    python3 -m symbiont.cycle --mode watch|discover|both   one bounded run
+    python3 -m symbiont.cycle status                        what a machine door's cycle_status reads
+    python3 -m symbiont.cycle selftest                      the seven acceptance cases (DESIGN §8)
+
+THE ORDER (DESIGN §3), each step's refusal class named:
+
+    1 TELEMETRY   the digests under <store>/digest — a digest with no numbers is not a measurement
+                  REFUSED[digest-no-numbers]
+    2 DISCOVER    over the deployment's OWN surface registry, listed queries only, each logged with
+                  its count. REFUSED[no-surfaces] with no registry (it never invents where to look),
+                  REFUSED[surface-kind-unknown], REFUSED[budget] (stops the cycle),
+                  REFUSED[network-down] / REFUSED[rate-too-low] per query (recorded, run continues)
+    3 EVALUATE    per candidate: THE LICENCE READ (a declared licence text — the operator's own
+                  words — else the declared `licence_url` fetched ONCE and hashed, else refused
+                  naming BOTH attempts) · a count endpoint · the rate limit · archived · dead.
+                  REFUSED[licence-unreadable] · REFUSED[archived] · REFUSED[dead-repo] ·
+                  REFUSED[no-count-endpoint]  (req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D: a
+                  `kind: listed` candidate has no code-host API to publish an spdx_id, so its
+                  terms are the terms PAGE it declared — the gate reads it, or the refusal is a
+                  blanket and the whole 'a registry of data portals' path is unreachable)
+    4 DRAFT       only when draft.provider is configured. None configured -> the candidate is
+                  PROPOSED (reported, not built). REFUSED[draft-no-output] · REFUSED[licence-unreadable]
+    5 SANDBOX     the draft runs in the tested throwaway store with the cycle's budget, and ITS COUNT
+                  IS VERIFIED BY THE CYCLE against the source's own count — never against the draft's
+                  self-report. REFUSED[count-mismatch] · REFUSED[count-unreadable] · REFUSED[budget]
+    6 CARD        the admission card (licence · counts · sample rows · xref rate · cost · question),
+                  which registers the source in sources.yml as enabled:false
+    7 ADMIT       ONLY IF admit.by_policy AND every required card check is green AND the source is
+                  stable for N cycles — and N is read from the owner's policy
+                  (reports/symbiont-policy.yml), never from this file and never invented. The
+                  admission record quotes the rule and N: "by policy, rule
+                  stable_cycles_before_self_admit, N=<n>". by_policy:false (the shipped default)
+                  means the cycle PROPOSES and a person admits.
+    8 REPORT      found · refused (rule named) · drafted · sandboxed · admitted · cost — and
+                  "I looked: <surfaces> <queries> 0 new" on a quiet week. A cycle that changes
+                  nothing still prints, every time.
+
+THE GOVERNANCE GATE (§7). The council question "May the SHIPPED station admit a data source by
+policy with no human in the runtime loop?" is PENDING — asked 2026-11-11 01:45, the record was
+DOWNGRADED TO PARKED (single-family, review failed). Until a ruling PERMITS it, `admit.by_policy:
+true` is REFUSED BY NAME before any work, quoting the ruling file it read and why it does not count.
+The cycle does not decide that question; it refuses to pretend it was answered.
+
+WHAT IT MAY NEVER DO (§4): invent a surface · admit a source whose licence it could not read · admit
+anything that failed its count check · spend past its budget · edit the law, fire lanes or the farm's
+queue · call a provider the deployment did not configure.
+
+EXIT CODES
+    0  the run completed — a quiet week is a completion, and a candidate refused by its own rule is
+       the cycle doing its job
+    2  REFUSED before any work: cycle.yml missing/unreadable/malformed (the parse error is named),
+       an unknown key, a bad mode/budget, admit.by_policy with no ruling on record, no surface
+       registry, a surface kind this version does not read
+    3  the run STOPPED, its reason named and recorded: budget spent mid-cycle, the digests do not
+       hold, or the network was down for every query (the "I looked" line is still printed)
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import datetime as dt
+import glob
+import hashlib
+import io
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import zipfile
+
+from .http import Fetcher, FetchError, HttpStatus
+from . import admission_policy, contract, events
+
+FARM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CYCLE = os.path.join(FARM, "symbiont", "cycle.yml")
+DEFAULT_CYCLE_STATE = os.path.join(FARM, "symbiont", "store", "cycle")
+
+EXIT_OK, EXIT_REFUSED, EXIT_STOPPED = 0, 2, 3
+
+CYCLE_KEYS = ("version", "enabled", "mode", "every", "budget", "rate_limit", "store", "report_dir",
+              "state_dir", "admission", "surfaces", "draft", "admit")
+BUDGET_KEYS = ("requests", "bytes", "wall_s")
+RATE_KEYS = ("requests_per_minute", "min_interval_s")
+SURFACE_KEYS = ("registry", "kind", "endpoint", "per_page", "dead_days", "seed_topics",
+                "active", "profiles")
+# A PROFILE is a NAMED OVERLAY on the surface keys above (req-P2-THE-AGING-SUBDOMAIN-SWEEP): it may
+# name any of them, and it may declare the BUDGET it needs. An empty mapping inherits the whole set.
+PROFILE_KEYS = ("registry", "kind", "endpoint", "per_page", "dead_days", "seed_topics", "budget")
+ADMISSION_KEYS = ("dir", "sources_config", "drafts_dir", "adapters_dir", "gate_file", "policy")
+DRAFT_KEYS = ("provider",)
+ADMIT_KEYS = ("by_policy", "ruling")
+MODES = ("watch", "discover", "both")
+KINDS = ("github_search", "listed")
+# HOW A SOURCE'S COUNT IS ESTABLISHED (req-P1-A-DUMP-IS-ITS-OWN-COUNT): an API answers a count
+# ENDPOINT; a DUMP has no server to ask, so its count is the records we parse from the bytes we
+# hashed. The default is the old rule, unchanged — a candidate that says nothing is still an
+# endpoint candidate, and still refused when it publishes no count endpoint.
+COUNT_KINDS = ("endpoint", "file")
+DEAD_STATUS = (403, 429)                 # the surface says our rate budget is spent
+RULING_FORBIDDEN = ("PARKED", "DOWNGRADED", "REJECTED", "UNREVIEWED", "SPLIT", "REFUSED")
+
+
+class CycleRefused(RuntimeError):
+    """The cycle refuses to go on, for a reason that has a name. `fatal` stops the whole run."""
+
+    def __init__(self, code: str, detail: str, fatal: bool = True):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+        self.fatal = fatal
+
+
+def _need(cond: bool, msg: str, code: str = "cycle-schema") -> None:
+    if not cond:
+        raise CycleRefused(code, msg)
+
+
+def _stamp() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _utc() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _sha_file(path: str) -> str:
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def _sha_text(t: str) -> str:
+    """The sha256 of a licence TEXT exactly as it was read (the page's bytes, or the operator's
+    words) — the receipt that makes 'the terms were read' checkable later."""
+    return hashlib.sha256((t or "").encode("utf-8", "replace")).hexdigest()
+
+
+# ── READING A TERMS PAGE (req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D) ────────────────────────────
+# A terms page is PROSE, so reading it is a recogniser with a DOCUMENTED PRECEDENCE, never a
+# substring hunt: the first pattern that fires inside a licensing sentence names the licence, and
+# the sentence itself is quoted in the record so a person can check the machine's reading. The
+# order in this table IS the precedence, and it is here and nowhere else — `Creative Commons
+# Attribution 3.0 Unported` beats the `GNU public licence` that the same page (HAGR's legal page)
+# mentions in passing about its ARCT software, because the CC patterns come first. A recogniser
+# that could not be argued with after the fact would be worse than no recogniser at all.
+LICENCE_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    # (label, regex, id — `{0}` is filled from the regex's first group when it has one)
+    ("CC0", r"\bCC0\b(?:\s*1\.0)?", "CC0-1.0"),
+    ("CC BY-SA", r"Creative\s+Commons\s+Attribution\s*[-\u2013]?\s*ShareAlike\s+(\d\.\d)",
+     "CC-BY-SA-{0}"),
+    ("CC BY-SA", r"Creative\s+Commons\s+Attribution\s*[-\u2013]?\s*ShareAlike", "CC-BY-SA"),
+    ("CC BY", r"Creative\s+Commons\s+Attribution\s+(\d\.\d)", "CC-BY-{0}"),
+    ("CC BY", r"Creative\s+Commons\s+Attribution", "CC-BY"),
+    ("ODbL", r"Open\s+(?:Data\s+Commons\s+)?Open\s+Database\s+Licen[cs]e", "ODbL-1.0"),
+    ("Apache-2.0", r"Apache\s+Licen[cs]e,?\s+[Vv]ersion\s+2\.0", "Apache-2.0"),
+    ("MIT", r"\bMIT\s+Licen[cs]e\b", "MIT"),
+    ("BSD-3-Clause", r"\bBSD[\s-]3[\s-]Clause\b", "BSD-3-Clause"),
+    ("GPL", r"GNU\s+(?:General\s+|Lesser\s+|Affero\s+)?[Pp]ublic\s+[Ll]icen[cs]e\s+[Vv]ersion\s+(\d)",
+     "GPL-{0}.0"),
+    ("GPL", r"GNU\s+(?:General\s+|Lesser\s+|Affero\s+)?[Pp]ublic\s+[Ll]icen[cs]e", "GPL"),
+    ("public domain", r"\bpublic\s+domain\b", "public-domain"),
+)
+LICENCE_WINDOW = 240      # chars either side of a phrase: is it inside a LICENSING sentence?
+
+
+def _licence_plain(text: str) -> str:
+    """The page as a person reads it: scripts and style dropped, markup dropped, space collapsed."""
+    t = re.sub(r"<(script|style)\b.*?</\1>", " ", text or "", flags=re.S | re.I)
+    t = re.sub(r"<[^>]+>", " ", t)
+    for a, b in (("&nbsp;", " "), ("&amp;", "&"), ("&#169;", "(c)"), ("&quot;", '"'),
+                 ("&#39;", "'"), ("&lt;", "<"), ("&gt;", ">")):
+        t = t.replace(a, b)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _licence_sentence(plain: str, a: int, b: int) -> str:
+    """The sentence the matched phrase sits in — quoted VERBATIM (bounded), the human check on the
+    machine's reading. Never a paraphrase: the reader must be able to see the page's own words."""
+    lo = max(plain.rfind(". ", 0, a), plain.rfind("; ", 0, a))
+    lo = 0 if lo < 0 else lo + 2
+    hi = plain.find(". ", b)
+    hi = len(plain) if hi < 0 else hi + 1
+    s = re.sub(r"\s+", " ", plain[lo:hi]).strip()
+    return s[:300] + ("\u2026" if len(s) > 300 else "")
+
+
+def _recognise_licence(text: str) -> dict:
+    """READ a terms page -> `dict(licence, quote, note)`; licence "" when nothing is recognisable.
+
+    A page about permissions that GRANTS nothing is NOT a licence, and this returns "" for it: the
+    gate may never turn 'we fetched a page' into 'we read the terms'. A phrase counts as stronger
+    evidence when it sits in a sentence that speaks of licensing (`licen[cs]` within
+    LICENCE_WINDOW), so a passing mention loses to an actual grant."""
+    plain = _licence_plain(text)
+    hits: list[tuple[int, int, int, str, str]] = []
+    for rank, (_label, rx, form) in enumerate(LICENCE_PATTERNS):
+        for m in re.finditer(rx, plain, re.I):
+            ctx = plain[max(0, m.start() - LICENCE_WINDOW):m.end() + LICENCE_WINDOW]
+            in_sentence = 0 if re.search(r"licen[cs]", ctx, re.I) else 1
+            groups = tuple(g for g in (m.groups() or ()) if g)
+            lic = form.format(*groups) if groups and "{0}" in form else \
+                ("" if "{0}" in form else form)
+            if not lic:
+                continue
+            hits.append((in_sentence, rank, m.start(), lic,
+                         _licence_sentence(plain, m.start(), m.end())))
+    if not hits:
+        return dict(licence="", quote="",
+                    note=f"the page ({len(plain)} char(s) of text) names no licence this gate can "
+                         f"recognise")
+    hits.sort()
+    _, _, _, lic, quote = hits[0]
+    return dict(licence=lic, quote=quote, note="")
+
+
+def _licence_gate(run: "Run", surface: dict, cand: dict) -> dict:
+    """3 · THE LICENCE READ — HOW this candidate's terms were read, or why they were not.
+
+    req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D. A `kind: listed` candidate is a KNOWN address, so
+    there is no code-host API to publish an spdx_id: `cand['licence']` was empty, every listed
+    candidate evaluated as null, and REFUSED[licence-unreadable] became a BLANKET over the one
+    surface kind that exists for data portals (measured 2026-11-13: GenAge's two zips + MGI's own
+    MGI_GenePheno.rpt, 3/3 refused — one of them with its terms page declared on the candidate).
+
+    THE ORDER IS THE POINT: the run reads, in this order, and stops at the first that answers —
+      1 the surface's own API (`github_search` publishes an spdx_id)      -> how="api"
+      2 the candidate's declared `licence_url`, FETCHED ONCE and hashed   -> how="fetched"
+      3 the OPERATOR's declared `licence:` text, verbatim                 -> how="declared"
+      4 neither                                                          -> how="absent" (the
+        caller REFUSES[licence-unreadable] NAMING BOTH attempted reads, so the refusal keeps its
+        meaning: it is never a blanket and never a cost-free 'no licence'.)
+    A page whose fetch succeeds but names no licence is NOT a reading — it falls through to (3) and
+    then to (4), with the page's own sha256 kept, so 'we looked' stays checkable. `how` therefore
+    answers, in the run record and the report, WHICH of the ways satisfied the gate (fetched ·
+    declared · absent), and `actor` says WHO read it: the machine fetched, a person declared."""
+    sid = str(cand.get("id") or "?")
+    kind = str(surface.get("kind") or "")
+    rec = dict(id=sid, surface=str(cand.get("surface") or surface.get("id") or ""), kind=kind,
+               how="absent", licence="", quote="", actor="", url="", sha256="", note="",
+               tried=[], refusal="")
+    # 1 · THE SURFACE'S OWN API. For a LISTED surface this field is the OPERATOR's declaration
+    # (below), because a listed candidate has no API to ask — the kind decides who wrote it.
+    api = "" if kind == "listed" else (cand.get("licence") or "").strip()
+    if api and api.upper() not in ("NOASSERTION", "NONE"):
+        rec.update(how="api", licence=api, quote=api, actor="machine",
+                   note=f"the surface's own API publishes {api}")
+        run.licence_gate.append(rec)
+        return rec
+    declared = (cand.get("licence") or "").strip() if kind == "listed" else ""
+    # 2 · THE DECLARED TERMS PAGE, FETCHED ONCE. Never a second request for the same candidate.
+    url = (cand.get("licence_url") or "").strip()
+    if url:
+        try:
+            txt = run.get_text(url, note=f"licence page {sid}")
+        except CycleRefused as e:
+            if e.fatal:
+                raise               # the run's own budget: STOP the run, never a per-candidate note
+            rec["tried"].append(dict(attempt="licence_url", url=url,
+                                     result=f"unreadable: {e.code}: {e.detail}"[:300]))
+        except contract.SourceGone as e:
+            # a 404/410 is DATA too (T9): the page is unfetchable, so the gate tries the operator's
+            # words next. Run.get_text does not map this class, and an uncaught 404 here would stop
+            # the whole run on one candidate's dead terms page (FINDING, named in the lane's report).
+            rec["tried"].append(dict(attempt="licence_url", url=url,
+                                     result=f"unreadable: source-gone: {e}"[:300]))
+        else:
+            got = _recognise_licence(txt)
+            rec["tried"].append(dict(attempt="licence_url", url=url,
+                                     result=f"read {len(txt)} byte(s), sha256={_sha_text(txt)}, "
+                                            f"licence {got['licence'] or 'NONE RECOGNISED'}"))
+            if got["licence"]:
+                rec.update(how="fetched", licence=got["licence"], quote=got["quote"],
+                           actor="machine", url=url, sha256=_sha_text(txt),
+                           note=f"the declared licence page was read ONCE and names {got['licence']}")
+                run.licence_gate.append(rec)
+                return rec
+            # fetched, hashed, and it grants nothing we can name: keep the receipt, keep looking
+            rec["url"], rec["sha256"], rec["note"] = url, _sha_text(txt), got["note"]
+    # 3 · THE OPERATOR'S OWN WORDS. A human may read a page this gate cannot parse (or a page that
+    # is not served at all); that reading is recorded VERBATIM and attributed to the operator.
+    if declared:
+        rec.update(how="declared", licence=declared, quote=declared, actor="operator",
+                   sha256=_sha_text(declared),
+                   note=("the operator declared this licence text on the candidate; the declared "
+                         "licence page was read and named no licence, so the operator's words "
+                         "answered" if rec["tried"] else
+                         "the operator declared this licence text on the candidate (no licence "
+                         "page to read)"))
+        run.licence_gate.append(rec)
+        return rec
+    # 4 · NEITHER — and the refusal names BOTH reads it attempted, so the class keeps its meaning.
+    rec["refusal"] = (
+        "attempt 1 (declared licence_url): "
+        + (f"{url} -> {rec['tried'][0]['result']}" if rec["tried"] else
+           "no licence_url on the candidate")
+        + "; attempt 2 (operator-declared licence:): no licence text on the candidate")
+    if not rec["note"]:
+        rec["note"] = "no licence_url and no operator-declared licence text"
+    run.licence_gate.append(rec)
+    return rec
+
+
+def _rel(path: str) -> str:
+    try:
+        return os.path.relpath(path, FARM)
+    except ValueError:
+        return path
+
+
+# ═══════════════════════════════════════════════════════════ 0 · THE CONFIG (refuses, never guesses)
+BUDGET_SOURCE_FILE = "the file's top-level budget"
+
+
+def _resolve_profile(raw: dict, path: str) -> tuple[dict, dict]:
+    """`surfaces.profiles` + `surfaces.active` — THE SECOND, NAMED SURFACE SET
+    (req-P2-THE-AGING-SUBDOMAIN-SWEEP).
+
+    A deployment may keep more than one surface set (a general registry and a subdomain one) and
+    switch the sentinel between them by changing ONE key, `active`, rather than editing the surface
+    block by hand. A profile is a NAMED OVERLAY on the surface keys: its own keys win, an EMPTY
+    profile inherits the whole set unchanged, and `budget` — when a profile declares one — is the
+    budget IN FORCE for that run. That last part is deliberate: a subdomain sweep costs more than a
+    general one BY MEASUREMENT, and a measurement is recorded as a DECISION (named in the profile's
+    own comment) rather than applied as a silent mutation of the file's top-level budget.
+
+    Nothing is guessed. An `active` naming no declared profile, a profile carrying an unknown key, a
+    profile budget that is not exactly the three keys, a profile-less file that still says `active`
+    — each is REFUSED by name, because a surface set is not something to fall back from.
+    """
+    s = raw["surfaces"]
+    merged = {k: v for k, v in s.items() if k in SURFACE_KEYS and k not in ("active", "profiles")}
+    profiles = s.get("profiles")
+    if profiles is None:
+        _need("active" not in s,
+              f"{path}: surfaces.active names {s.get('active')!r} but the file declares no "
+              f"`surfaces.profiles` — a named surface set needs a set to select",
+              "surface-profile-unknown")
+        return merged, dict(name="", profiles=[], budget_source=BUDGET_SOURCE_FILE)
+    _need(isinstance(profiles, dict) and profiles,
+          f"{path}: surfaces.profiles must be a NON-EMPTY mapping of profile name -> keys "
+          f"{list(PROFILE_KEYS)} (an empty profile mapping is lawful: it inherits every surface "
+          f"key above)", "surface-profile")
+    for name, prof in profiles.items():
+        _need(isinstance(prof, dict),
+              f"{path}: surfaces.profiles[{name!r}] must be a mapping (empty = inherit the surface "
+              f"keys above), got {prof!r}", "surface-profile")
+        unknown = [k for k in prof if k not in PROFILE_KEYS]
+        _need(not unknown,
+              f"{path}: surfaces.profiles[{name!r}] carries unknown key(s) {sorted(unknown)} — the "
+              f"schema is {list(PROFILE_KEYS)}", "surface-profile")
+    active = s.get("active")
+    _need(isinstance(active, str) and active,
+          f"{path}: surfaces.profiles names {sorted(profiles)} and surfaces.active must choose ONE "
+          f"of them — the operator's choice, never a guess", "surface-profile-unknown")
+    _need(active in profiles,
+          f"{path}: surfaces.active names {active!r}, which is not one of the profiles "
+          f"{sorted(profiles)} — the cycle will not fall back to another surface set",
+          "surface-profile-unknown")
+    prof = dict(profiles[active])
+    budget = prof.pop("budget", None)
+    if budget is not None:
+        _need(isinstance(budget, dict) and sorted(budget) == sorted(BUDGET_KEYS),
+              f"{path}: surfaces.profiles[{active!r}].budget must be exactly {list(BUDGET_KEYS)} "
+              f"(a profile that declares a budget declares all of it), got {budget!r}",
+              "surface-profile")
+        for k in BUDGET_KEYS:
+            _need(isinstance(budget[k], int) and not isinstance(budget[k], bool) and budget[k] >= 1,
+                  f"{path}: surfaces.profiles[{active!r}].budget.{k} must be a positive integer, "
+                  f"got {budget[k]!r}", "surface-profile")
+    merged.update(prof)          # THE ACTIVE PROFILE WINS over the surface keys above
+    return merged, dict(name=active, profiles=sorted(profiles),
+                        budget=dict(budget) if budget else None,
+                        budget_source=(f"the DECLARED budget of profile `{active}`" if budget
+                                       else BUDGET_SOURCE_FILE))
+
+
+def load_cycle(path: str = DEFAULT_CYCLE) -> dict:
+    """Parse + validate cycle.yml. Every way the file can be wrong is REFUSED BY NAME, and a
+    malformed file names the parser's own error: a cycle that guesses at its budget or its admission
+    default is an unbounded loop with good manners."""
+    import yaml
+    if not os.path.isfile(path):
+        raise CycleRefused("cycle-missing",
+                           f"the cycle config {path} is missing — the cycle refuses to start "
+                           f"(it will not invent a budget, a surface or an admission default)")
+    try:
+        with open(path, "rb") as fh:
+            raw_bytes = fh.read()
+    except OSError as e:
+        raise CycleRefused("cycle-unreadable",
+                           f"the cycle config {path} could not be read "
+                           f"({type(e).__name__}: {e}) — the cycle refuses to start") from e
+    try:
+        raw = yaml.safe_load(raw_bytes.decode("utf-8", "strict"))
+    except (UnicodeDecodeError, yaml.YAMLError) as e:
+        raise CycleRefused("cycle-malformed",
+                           f"the cycle config {path} is MALFORMED — the cycle refuses to start, the "
+                           f"parse error named: {type(e).__name__}: {e}") from e
+    _need(isinstance(raw, dict), f"{path}: the top level must be a mapping with the keys "
+                                 f"{list(CYCLE_KEYS)}")
+    unknown = [k for k in raw if k not in CYCLE_KEYS]
+    _need(not unknown, f"{path}: unknown top-level key(s) {sorted(unknown)} — the schema is "
+                       f"{list(CYCLE_KEYS)}")
+    missing = [k for k in CYCLE_KEYS if k not in raw]
+    _need(not missing, f"{path}: missing key(s) {missing} — the cycle refuses to invent them")
+    _need(raw["version"] == 1, f"{path}: unsupported version {raw['version']!r} (this code reads 1)")
+    _need(isinstance(raw["enabled"], bool),
+          f"{path}: `enabled` must be true or false, got {raw['enabled']!r}")
+    _need(raw["mode"] in MODES, f"{path}: `mode` must be one of {list(MODES)}, got {raw['mode']!r}")
+    _need(isinstance(raw["every"], str) and raw["every"],
+          f"{path}: `every` must name the cadence (e.g. weekly)")
+
+    b = raw["budget"]
+    _need(isinstance(b, dict) and sorted(b) == sorted(BUDGET_KEYS),
+          f"{path}: `budget` must be exactly {list(BUDGET_KEYS)}, got {b!r}")
+    for k in BUDGET_KEYS:
+        _need(isinstance(b[k], int) and not isinstance(b[k], bool) and b[k] >= 1,
+              f"{path}: budget.{k} must be a positive integer, got {b[k]!r}")
+    r = raw["rate_limit"]
+    _need(isinstance(r, dict) and sorted(r) == sorted(RATE_KEYS),
+          f"{path}: `rate_limit` must be exactly {list(RATE_KEYS)}, got {r!r}")
+
+    s = raw["surfaces"]
+    _need(isinstance(s, dict), f"{path}: `surfaces` must be a mapping")
+    unknown = [k for k in s if k not in SURFACE_KEYS]
+    _need(not unknown, f"{path}: surfaces carries unknown key(s) {sorted(unknown)} — the schema is "
+                       f"{list(SURFACE_KEYS)}")
+    # THE SECOND, NAMED SURFACE SET: resolve `surfaces.profiles` + `surfaces.active` into the ONE
+    # surface mapping the rest of the cycle reads, and keep both budgets on the record — the file's
+    # own (untouched) and the one IN FORCE (a profile may declare its own, by measurement).
+    raw["_file_budget"] = dict(raw["budget"])
+    surfaces, prof = _resolve_profile(raw, path)
+    raw["surfaces"] = surfaces
+    raw["_profile"] = prof
+    if prof.get("budget"):
+        raw["budget"] = dict(prof["budget"])
+    _need(isinstance(s.get("registry"), str) and s["registry"],
+          f"{path}: surfaces.registry must name the deployment's OWN registry — the cycle never "
+          f"invents where to look")
+    _need(isinstance(raw["budget"], dict) and sorted(raw["budget"]) == sorted(BUDGET_KEYS),
+          f"{path}: `budget` must be exactly {list(BUDGET_KEYS)}, got {raw['budget']!r}")
+
+    a = raw["admission"]
+    _need(isinstance(a, dict) and sorted(a) == sorted(ADMISSION_KEYS),
+          f"{path}: `admission` must be exactly {list(ADMISSION_KEYS)}, got {sorted(a)}")
+    d = raw["draft"]
+    _need(isinstance(d, dict) and sorted(d) == sorted(DRAFT_KEYS),
+          f"{path}: `draft` must be exactly {list(DRAFT_KEYS)}, got {sorted(d)}")
+    _need(isinstance(d["provider"], str), f"{path}: draft.provider must be a string (empty = no drafting)")
+    ad = raw["admit"]
+    _need(isinstance(ad, dict) and sorted(ad) == sorted(ADMIT_KEYS),
+          f"{path}: `admit` must be exactly {list(ADMIT_KEYS)}, got {sorted(ad)}")
+    _need(isinstance(ad["by_policy"], bool),
+          f"{path}: admit.by_policy must be true or false, got {ad['by_policy']!r}")
+    _need(isinstance(ad["ruling"], str), f"{path}: admit.ruling must be a path or an empty string")
+    for k in ("store", "report_dir", "state_dir"):
+        _need(isinstance(raw[k], str) and raw[k], f"{path}: {k} must be a path")
+    raw["_path"] = os.path.abspath(path)
+    raw["_sha256"] = hashlib.sha256(raw_bytes).hexdigest()
+    return raw
+
+
+def _path(cfg: dict, key: str, sub: str | None = None) -> str:
+    """A path from the config, resolved against the farm (a deployment ships relative paths)."""
+    p = cfg[key] if sub is None else cfg[key][sub]
+    return p if os.path.isabs(p) else os.path.join(FARM, p)
+
+
+def _ruling_path(cfg: dict) -> str:
+    """The ruling path, or "" when none is on record (never the farm directory by accident)."""
+    p = (cfg.get("admit") or {}).get("ruling") or ""
+    return "" if not p else (p if os.path.isabs(p) else os.path.join(FARM, p))
+
+
+# ═══════════════════════════════════════════════════════════ 1 · THE GOVERNANCE GATE (§7)
+def read_ruling(path: str) -> tuple[bool, str]:
+    """Is there a ruling ON RECORD that PERMITS admit-by-policy? -> (permits, why-not).
+
+    The question the court was asked is a constitutional one, so the test is deliberately narrow:
+    the file must exist, must carry a DECISION (or RULING) line that chooses option A — the option
+    that ships admit-by-policy OFF BY DEFAULT — and must not carry a STATUS line that parks,
+    downgrades, rejects or leaves it unreviewed. Anything else is NOT a permission, and the cycle
+    says which of those it found, quoting the line it read."""
+    if not path:
+        return False, ("no ruling is on record (admit.ruling is empty) — the council question 'May "
+                       "the SHIPPED station admit a data source by policy with no human in the "
+                       "runtime loop?' is PENDING (reports/RULINGS/20261111-014502-*), so "
+                       "admit.by_policy: true is REFUSED by name")
+    if not os.path.isfile(path):
+        return False, f"the ruling {path} is not on disk — a permission that cannot be read is not a permission"
+    text = open(path, encoding="utf-8", errors="replace").read()
+    status_line, decision_line = "", ""
+    for line in text.splitlines():
+        m = re.match(r"^#{0,3}\s*(STATUS|DECISION|RULING)\s*:\s*(.+?)\s*$", line)
+        if not m:
+            continue
+        if m.group(1) == "STATUS" and not status_line:
+            status_line = m.group(2)
+        elif m.group(1) in ("DECISION", "RULING") and not decision_line:
+            decision_line = m.group(2)
+    if not decision_line:
+        return False, (f"the ruling {path} carries no DECISION/RULING line — it is not a ruling "
+                       f"this cycle can quote")
+    bad = [w for w in RULING_FORBIDDEN if w in decision_line.upper() or w in status_line.upper()]
+    if bad:
+        return False, (f"the ruling {path} does not permit admit-by-policy: STATUS: {status_line or '(none)'} · "
+                       f"DECISION: {decision_line} (found {', '.join(bad)}) — the ruling is not a "
+                       f"permission this cycle may act on")
+    if not re.match(r"^A\b", decision_line.strip(), re.I):
+        return False, (f"the ruling {path} decided {decision_line!r}, not option A (ship "
+                       f"admit-by-policy off by default) — admit.by_policy: true is REFUSED by name")
+    return True, f"{_rel(path)}: DECISION: {decision_line} · STATUS: {status_line or '(none)'}"
+
+
+# ═══════════════════════════════════════════════════════════ 2 · THE RUN
+class Run:
+    """One bounded run: its budget, its ledger, its report lines, its refusals."""
+
+    def __init__(self, cfg: dict, mode: str):
+        self.cfg = cfg
+        self.mode = mode
+        self.run_id = "cycle-" + _stamp()
+        self.started_at = _utc()
+        self.store = _path(cfg, "store")
+        self.report_dir = _path(cfg, "report_dir")
+        self.state_dir = _path(cfg, "state_dir")
+        self.admission = {k: _path(cfg, "admission", k) for k in ADMISSION_KEYS}
+        self.report_path = os.path.join(self.report_dir, f"CYCLE-REPORT-{_stamp()}.md")
+        self.lines: list[str] = []
+        self.found: list[dict] = []
+        self.refused: list[dict] = []
+        # THE LICENCE GATE'S OWN LEDGER (req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D): one record per
+        # evaluated candidate saying HOW its terms were read (api · fetched · declared · absent),
+        # by WHOM (machine · operator), with the url and the sha256 of the text actually read.
+        self.licence_gate: list[dict] = []
+        self.drafted: list[str] = []
+        self.sandboxed: list[dict] = []
+        self.carded: list[str] = []
+        self.admitted: list[dict] = []
+        self.proposed: list[dict] = []
+        self.telemetry: list[dict] = []
+        self.queries: list[dict] = []
+        self.looked = dict(surfaces=0, queries=0, new=0, seen=0, errors=0)
+        # THE RUN'S OBSERVATION LEDGER (req-P1-THE-DIARY-REFUSES-RE-OBSERVATION): one record per
+        # DIARY source_id for THIS run, so a candidate observed k times is ONE event carrying
+        # occurrences: k. `seen_again` is what the run looked at and did NOT record a transition
+        # for (a re-observation), and `reobserved` is the writer refusing to ask the diary twice.
+        self.observations: dict[str, dict] = {}
+        self.seen_again: list[dict] = []
+        self.reobserved: list[dict] = []
+        self.emitted: dict[tuple[str, str], dict | None] = {}
+        self.steps_done: list[str] = []
+        self.step_now = ""           # the step running when a stop happens (named in the record)
+        self.stopped = ""            # the class that stopped the run ("" = completed)
+        self.stop_detail = ""
+        self.last_run_note = ""
+        self.fetcher = Fetcher(budget=dict(cfg["budget"]), rate_limit=dict(cfg["rate_limit"]),
+                               deadline_s=int(cfg["budget"]["wall_s"]))
+        self._read_last_run()
+
+    # -- ledger -----------------------------------------------------------------------------
+    def say(self, line: str) -> None:
+        print(line, flush=True)
+        self.lines.append(line)
+
+    def refuse(self, code: str, detail: str, fatal: bool = True) -> None:
+        self.refused.append(dict(code=code, detail=detail, at=_utc()))
+        if fatal:
+            raise CycleRefused(code, detail, True)
+
+    def note_refusal(self, code: str, detail: str) -> None:
+        """A refusal that does NOT stop the run (one query, one candidate) — recorded, printed."""
+        self.refused.append(dict(code=code, detail=detail, at=_utc()))
+        self.say(f"REFUSED[{code}] {detail}")
+
+    @property
+    def cost(self) -> dict:
+        return dict(requests=len(self.fetcher.log), bytes_in=self.fetcher.bytes_in,
+                    wall_s=self.fetcher.wall_seconds, rate_limit_waits=self.fetcher.waits)
+
+    def evidence(self) -> list[dict]:
+        """THE EVIDENCE LEDGER — one row per candidate this run found NEW.
+
+        req-P2-THE-AGING-SUBDOMAIN-SWEEP: the lane that runs a subdomain sweep ranks its candidates
+        by EVIDENCE SHAPE (what the surface says the thing IS, whether its terms are readable,
+        whether it publishes a count) and never by stars. Everything it needs is here, taken from
+        the same responses the counts came from — no extra request, no second reader of the surface.
+        `stars` is carried so that "never by stars" is checkable against the record itself.
+        """
+        out: list[dict] = []
+        for r in self.observations.values():
+            if not r.get("new"):
+                continue                     # seen-before is not new, and it is not evidence either
+            c = r.get("cand") or {}
+            gate = c.get("licence_gate") or {}
+            out.append(dict(id=c.get("id") or "", full_name=c.get("full_name") or "",
+                            url=c.get("url") or "", surface=c.get("surface") or "",
+                            description=c.get("description") or "",
+                            topics=list(c.get("topics") or []),
+                            stars=int(c.get("stars") or 0),
+                            archived=bool(c.get("archived")),
+                            pushed_at=c.get("pushed_at") or "",
+                            count_endpoint=c.get("count_endpoint") or "",
+                            count_kind=c.get("count_kind") or "endpoint",
+                            licence_how=gate.get("how") or "",
+                            licence=(gate.get("licence") or c.get("licence") or ""),
+                            refusal=c.get("refusal") or ""))
+        return out
+
+    @property
+    def budget_left(self) -> dict:
+        b = self.cfg["budget"]
+        return dict(requests=b["requests"] - len(self.fetcher.log),
+                    bytes=b["bytes"] - self.fetcher.bytes_in,
+                    wall_s=round(b["wall_s"] - self.fetcher.wall_seconds, 1))
+
+    # -- the diary (req-P1-THE-DIARY-appended-by-the-code-nev) ------------------------------
+    def diary(self, cand: dict, event_class: str, why: str, evidence: dict | None = None,
+              actor: str = "machine") -> dict | None:
+        """THE EMISSION HOOK — one line per transition, written where the transition happens.
+
+        A CANDIDATE has no dataset identity yet (sources.yml gains it only when the card registers
+        it), so the diary key is the candidate id and the event SAYS so in its evidence: a weaker
+        key that announces itself, never a stronger one that is invented. If the diary refuses the
+        line (illegal transition, damaged tail) the refusal is named in the run's own ledger — the
+        cycle never pretends a transition was recorded when it was not.
+
+        ONCE PER RUN PER CANDIDATE PER CLASS (req-P1-THE-DIARY-REFUSES-RE-OBSERVATION). A second
+        emission of the same class for the same candidate in the same run is NOT written: the diary
+        is right that 'discovered' may not follow 'discovered' (a table that permitted it would
+        stop being a state machine), so the WRITER must not ask twice. The attempt is named (printed
+        and in the report) and the ONE event that stands is returned, so no caller can report a
+        duplicate as if it were history. The count of the repeats lives in the evidence of that ONE
+        event (`occurrences`), written by `step_discover` from the run's observation ledger.
+
+        `actor` is `machine` unless a PERSON caused the transition: EVALUATE passes
+        `actor="operator"` for a candidate whose terms were read from the operator's own declared
+        licence text (req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D) — the diary says who decided, and
+        a human's reading is never dressed up as the machine's own."""
+        sid = str(cand.get("id") or "?")
+        if (sid, event_class) in self.emitted:
+            rec = self.observations.get(sid) or {}
+            self.reobserved.append(dict(source_id=sid, event_class=event_class,
+                                        occurrences=int(rec.get("occurrences") or 1)))
+            self.say(f"RE-OBSERVED {sid}  '{event_class}' is already written for this candidate in "
+                     f"run {self.run_id} — no second event: a re-observation is not a state change")
+            return self.emitted[(sid, event_class)]
+        ev = dict(evidence or {})
+        ev.setdefault("candidate", sid)
+        ev.setdefault("full_name", cand.get("full_name", ""))
+        ev.setdefault("run_id", self.run_id)
+        ev.setdefault("source_id_source", "candidate-id: no dataset identity before sources.yml")
+        try:
+            written = events.append(self.store, event_class, source_id=sid, why=why,
+                                    actor=actor, evidence=ev)
+        except events.DiaryRefused as e:
+            self.note_refusal(e.code, f"{sid}: the diary refused the '{event_class}' event: {e}")
+            self.emitted[(sid, event_class)] = None      # refused once: same state, same answer
+            return None
+        self.emitted[(sid, event_class)] = written
+        return written
+
+    # -- the previous run (A6: the next cycle says how much it did) ----------------------------
+    def _read_last_run(self) -> None:
+        p = os.path.join(self.state_dir, "last.json")
+        if not os.path.isfile(p):
+            return
+        try:
+            rec = json.load(open(p, encoding="utf-8"))
+        except Exception:
+            return
+        self.last_run_note = (f"{rec.get('run_id', '?')} mode={rec.get('mode', '?')} "
+                              f"outcome={rec.get('outcome', '?')} steps={','.join(rec.get('steps_done') or []) or 'none'} "
+                              f"({rec.get('started_at', '?')})")
+
+    # -- HTTP, charged against this run's ONE budget ------------------------------------------
+    def get_text(self, url: str, note: str) -> str:
+        try:
+            return self.fetcher.get_text(url, note=note)
+        except contract.BudgetExceeded as e:
+            raise CycleRefused("budget", f"the cycle's own budget is spent mid-run ({e}) — the run "
+                                         f"stops here and records why") from e
+        except HttpStatus as e:
+            code = "rate-too-low" if e.status in DEAD_STATUS else f"http-{e.status}"
+            raise CycleRefused(code, str(e), fatal=False) from e
+        except FetchError as e:
+            raise CycleRefused("network-down", str(e), fatal=False) from e
+
+    def get_bytes(self, url: str, note: str) -> bytes:
+        """THE BYTES, charged like any other read: a dump's count is a count OF these bytes, so the
+        run must charge them to its own budget exactly as it charges a page or a search."""
+        try:
+            return self.fetcher.get(url, note=note)
+        except contract.BudgetExceeded as e:
+            raise CycleRefused("budget", f"the cycle's own budget is spent mid-run ({e}) — the run "
+                                         f"stops here and records why") from e
+        except HttpStatus as e:
+            code = "rate-too-low" if e.status in DEAD_STATUS else f"http-{e.status}"
+            raise CycleRefused(code, str(e), fatal=False) from e
+        except FetchError as e:
+            raise CycleRefused("network-down", str(e), fatal=False) from e
+
+    def get_json(self, url: str, note: str) -> dict:
+        txt = self.get_text(url, note)
+        try:
+            return json.loads(txt)
+        except Exception as e:
+            raise CycleRefused("surface-unreadable",
+                               f"{url} answered something that is not JSON ({type(e).__name__}); "
+                               f"the surface's own words: {txt[:120]!r}", fatal=False) from e
+
+
+# ═══════════════════════════════════════════════════════════ 3 · THE REGISTRY (never invented)
+def load_registry(cfg: dict) -> list[dict]:
+    """The deployment's OWN surface registry -> [{id, kind, queries|candidates, ...}].
+
+    Two forms, both "listed only": a plain line-based registry (one query per line, `#` comments —
+    the shape tools/discover-sweep.queries.txt already has) is a single github_search surface; a
+    .yml registry names its surfaces explicitly, each with its kind and either its queries or its
+    own listed candidates (with the count endpoint its counts must come from)."""
+    import yaml
+    path = _path(cfg, "surfaces", "registry")
+    if not os.path.isfile(path):
+        raise CycleRefused("no-surfaces",
+                           f"the surface registry {path} is missing — the cycle does not invent "
+                           f"where to look")
+    s = cfg["surfaces"]
+    if os.path.splitext(path)[1].lower() in (".yml", ".yaml"):
+        try:
+            raw = yaml.safe_load(open(path, encoding="utf-8"))
+        except yaml.YAMLError as e:
+            raise CycleRefused("registry-malformed",
+                               f"the surface registry {path} is MALFORMED — the parse error named: {e}")
+        _need(isinstance(raw, dict) and isinstance(raw.get("surfaces"), list) and raw["surfaces"],
+              f"{path}: a structured registry needs a non-empty `surfaces` list", "no-surfaces")
+        out = []
+        for i, surf in enumerate(raw["surfaces"]):
+            _need(isinstance(surf, dict) and surf.get("id"), f"{path}: surfaces[{i}] has no id",
+                  "surface-schema")
+            out.append(dict(surf))
+        return out
+
+    queries: list[str] = []
+    for line in open(path, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if line and not line.startswith("#"):
+            queries.append(line)
+    if not queries:
+        raise CycleRefused("no-surfaces",
+                           f"the surface registry {path} lists no query — an empty registry is not "
+                           f"a place to look")
+    for k in ("kind", "endpoint"):
+        _need(isinstance(s.get(k), str) and s[k],
+              f"{cfg['_path']}: a plain registry needs surfaces.{k} (it names how its queries "
+              f"are read) — the cycle will not invent it", "no-surfaces")
+    for k in ("per_page", "dead_days", "seed_topics"):
+        _need(isinstance(s.get(k), int) and not isinstance(s[k], bool) and s[k] >= 1,
+              f"{cfg['_path']}: a plain registry needs surfaces.{k} as a positive integer",
+              "no-surfaces")
+    return [dict(id=os.path.basename(path), kind=s["kind"], endpoint=s["endpoint"],
+                 queries=queries, per_page=s["per_page"], dead_days=s["dead_days"],
+                 seed_topics=s["seed_topics"])]
+
+
+def _expand_seed(run: Run, surface: dict, line: str) -> list[str]:
+    """`seed:owner/repo` -> the repo's first `seed_topics` topics as queries (the sweep's own form).
+    An unreadable seed is a NAMED refusal, not a silent skip: it was listed, so it was looked for."""
+    owner_repo = line.split(":", 1)[1].strip()
+    url = "https://api.github.com/repos/" + owner_repo
+    try:
+        body = run.get_json(url, note=f"seed {owner_repo}")
+    except CycleRefused as e:
+        run.note_refusal(e.code, f"seed {owner_repo}: {e.detail}")
+        run.looked["errors"] += 1
+        return []
+    topics = body.get("topics") or []
+    return [f"topic:{t}" for t in topics[: int(surface.get("seed_topics") or 3)]]
+
+
+def _seen_path(run: Run) -> str:
+    return os.path.join(run.state_dir, "seen.jsonl")
+
+
+def _seen_load(run: Run) -> set[str]:
+    p = _seen_path(run)
+    if not os.path.isfile(p):
+        return set()
+    out = set()
+    for line in open(p, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if rec.get("key"):
+            out.add(rec["key"])
+    return out
+
+
+# ═══════════════════════════════════════════════════════════ 4 · THE STEPS
+def step_telemetry(run: Run) -> None:
+    """1 · TELEMETRY — the digests, READ ONLY (watch mode writes nothing but its own record).
+
+    THE ONE DEFINITION SITE: `symbiont.digests.verify` decides whether a file is a digest at all —
+    "a digest with no numbers is REFUSED (prose is not a digest)", "a count that cannot be
+    reproduced by its own query is refused" — so the cycle does not re-invent that rule, it runs
+    the tested one over every file in <store>/digest.
+
+    A REFUSED DIGEST IS A NAMED REFUSAL, NOT A DEAD STATION. DESIGN §3 names digest-no-numbers as
+    step 1's refusal; this cycle records it, names the file and the rule, and does NOT pretend the
+    rest of the station is broken — discovery does not consume the digests, and a station whose
+    watch says "this one file is prose" has done its job. (Quoted in the report either way.)"""
+    from . import digests
+    ddir = os.path.join(run.store, "digest")
+    files = sorted(glob.glob(os.path.join(ddir, "*.md")))
+    if not files:
+        run.telemetry.append(dict(digest="", lines=0,
+                                  note=f"no digest under {_rel(ddir)} — nothing measured yet (the "
+                                       f"daily pass writes them); the cycle cannot report staleness "
+                                       f"it has not measured"))
+        run.say(f"TELEMETRY no digest under {_rel(ddir)} — nothing measured yet")
+        run.steps_done.append("telemetry(0 digests)")
+        return
+    held = refused = 0
+    for p in files:
+        try:
+            breaches = digests.verify(p)          # the tested rule, not a second copy of it
+        except Exception as e:                    # a verifier that dies is a refusal, not a crash
+            breaches = [f"REFUSED[digest-unreadable] {os.path.basename(p)}: "
+                        f"{type(e).__name__}: {e}"]
+        if breaches:
+            refused += 1
+            for b in breaches:
+                code = _refusal_code(b, "digest-refused")
+                run.note_refusal(code, re.sub(r"^REFUSED\[[a-z0-9-]+\]\s*", "", b))
+            run.telemetry.append(dict(digest=_rel(p), lines=0,
+                                      note="refused as a measurement (named above)"))
+            continue
+        held += 1
+        text = open(p, encoding="utf-8", errors="replace").read()
+        run.telemetry.append(dict(digest=_rel(p),
+                                  lines=len(re.findall(r"^-\s+[^:\n]+:\s*\S", text, re.M)),
+                                  note=""))
+    run.say(f"TELEMETRY {held}/{len(files)} digest(s) hold (each count reproduced by its own query)"
+            + (f" — {refused} refused by name" if refused else ""))
+    run.steps_done.append(f"telemetry({held}/{len(files)} digests hold)")
+
+
+def _api_candidate(run: Run, surface: dict, item: dict) -> dict:
+    """EVALUATE one search result from what the surface's own API says about it.
+
+    THE SHAPE FIELDS ARE CARRIED FOR EVIDENCE, NOT FOR RANKING: `description` and `topics` are the
+    surface's own words about what the repository IS (a dataset? an atlas? a pipeline?), and
+    `stars` is recorded so a reader can PROVE it was not the key the candidates were ordered by
+    (req-P2-THE-AGING-SUBDOMAIN-SWEEP: ranked by evidence shape, never by stars). All of it comes
+    from the same response the count came from — this asks the surface nothing extra.
+    """
+    full = item.get("full_name") or ""
+    sid = re.sub(r"[^a-z0-9_]+", "_", full.lower().replace("/", "_"))[:40].strip("_") or "candidate"
+    cand = dict(id=sid, key=f"github_search:{full}", full_name=full,
+                url=item.get("html_url") or "", surface=surface["id"],
+                licence=((item.get("license") or {}).get("spdx_id") or ""),
+                archived=bool(item.get("archived")), pushed_at=item.get("pushed_at") or "",
+                description=(item.get("description") or ""),
+                topics=list(item.get("topics") or []),
+                stars=int(item.get("stargazers_count") or 0),
+                count_endpoint="", question="")
+    return cand
+
+
+def _refuse_candidate(run: "Run", cand: dict, code: str, detail: str) -> bool:
+    """EVALUATE's refusal, recorded TWICE on purpose: in the run's own ledger (the report reads it)
+    and as a `refused` line in the diary with its refusal class in the evidence — the answer to
+    "why was this source refused" is a line, not a reconstruction (req-P1-THE-DIARY).
+
+    ONE line, carrying the COUNT (req-P1-THE-DIARY-REFUSES-RE-OBSERVATION): a candidate observed k
+    times in this run is refused ONCE with `occurrences: k` in the evidence, never k refusals —
+    'refused' may not follow 'refused' any more than 'discovered' may follow 'discovered', and the
+    diary is right about that. The run's own ledger still names every rule it applied."""
+    run.note_refusal(code, detail)
+    # THE CLASS IS STAMPED ON THE CANDIDATE, not only in the refusal text: the run record's evidence
+    # ledger reads it per candidate, so the lane that ranks by evidence shape can say which rule a
+    # candidate fell to without parsing a sentence (req-P2-THE-AGING-SUBDOMAIN-SWEEP).
+    cand["refusal"] = code
+    rec = run.observations.get(str(cand.get("id") or "?")) or {}
+    run.diary(cand, "refused", detail, dict(refusal_code=code,
+                                             occurrences=int(rec.get("occurrences") or 1),
+                                             seen_before=int(rec.get("seen_before") or 0)))
+    return False
+
+
+def _evaluate(run: Run, surface: dict, cand: dict) -> bool:
+    """3 · EVALUATE — the rules, each named. Returns True when the candidate survives.
+
+    THE LICENCE READ IS THE GATE (req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D): `_licence_gate` reads
+    the surface's API, then the candidate's DECLARED `licence_url` (fetched once, hashed), then the
+    OPERATOR's declared `licence:` text — and only when NEITHER answers is the candidate refused,
+    with BOTH attempted reads named in the refusal. The gate record is kept on the candidate and in
+    the run's ledger, so the report and the run record say WHICH way the terms were read."""
+    gate = _licence_gate(run, surface, cand)
+    cand["licence_gate"] = gate
+    if gate["how"] == "absent":
+        return _refuse_candidate(run, cand, "licence-unreadable",
+                         f"{cand['full_name'] or cand['id']}: terms unread — {gate['refusal']} — "
+                         f"terms unread = no data (POLICY-THIRD-PARTY §1)")
+    if cand.get("archived"):
+        return _refuse_candidate(run, cand, "archived",
+                         f"{cand['full_name']}: archived upstream — a dependency we could not pin")
+    pushed = cand.get("pushed_at") or ""
+    if pushed:
+        try:
+            age = (dt.datetime.now(dt.timezone.utc)
+                   - dt.datetime.fromisoformat(pushed.replace("Z", "+00:00"))).days
+        except ValueError:
+            age = -1
+        dead = int(surface.get("dead_days") or 730)
+        if age > dead:
+            return _refuse_candidate(run, cand, "dead-repo",
+                             f"{cand['full_name']}: no push for {age} day(s) (the surface's own "
+                             f"dead_days={dead}) — a dependency that cannot be pinned is a risk")
+    # RATE LIMIT FITS THIS RUN'S BUDGET (DESIGN §3 step 3): a source whose own politeness makes
+    # even ONE read cost more wall clock than this run has left is refused NOW, with the
+    # arithmetic, not discovered halfway through a sandbox run. The candidate's declared limit is
+    # used when the registry names one; otherwise the deployment's own politeness (cycle.yml
+    # rate_limit) governs, because it is the deployment doing the reading.
+    rl = cand.get("rate_limit") or run.cfg["rate_limit"]
+    rpm = float(rl.get("requests_per_minute") or 0)
+    gap = float(rl.get("min_interval_s") or 0)
+    wall_needed = (60.0 / rpm) if rpm else gap
+    left = max(0.0, run.budget_left["wall_s"])
+    if wall_needed > left:
+        return _refuse_candidate(run, cand, "rate-too-low",
+                         f"{cand['full_name'] or cand['id']}: at {rpm:g} request(s)/minute"
+                         f"{f' with {gap:g}s between them' if gap else ''} one read needs "
+                         f"~{wall_needed:.1f}s of wall clock and this run has {left:.1f}s left "
+                         f"(budget wall_s={run.cfg['budget']['wall_s']}) — the cycle will not "
+                         f"start a source it cannot read politely inside its own budget")
+    # A DUMP IS ITS OWN COUNT (req-P1-A-DUMP-IS-ITS-OWN-COUNT). `count_kind: file` says the
+    # source IS bytes we hold: the count is the records parsed from the bytes we hashed, and when
+    # the publisher also states a number ours must equal it too. The endpoint rule below is right
+    # for an API and wrong for a dump (GenAge's zips, MGI's .rpt, Ensembl BioMart dumps), so the
+    # declaration chooses which rule applies — and a declaration this version cannot read is
+    # refused BY NAME rather than silently treated as an endpoint.
+    ck = str(cand.get("count_kind") or "endpoint")
+    if ck not in COUNT_KINDS:
+        return _refuse_candidate(run, cand, "count-kind-unknown",
+                         f"{cand['full_name'] or cand['id']}: the candidate names count_kind {ck!r}; "
+                         f"this version reads {list(COUNT_KINDS)} — it will not guess how a count "
+                         f"is established")
+    if ck == "file":
+        try:
+            cand["file_verify"] = _file_verify(run, cand)
+        except CycleRefused as e:
+            if e.fatal:
+                raise                  # the run's own budget: STOP the run, never a candidate note
+            return _refuse_candidate(run, cand, e.code,
+                                     f"{cand['full_name'] or cand['id']}: {e.detail}")
+        return True
+    if not cand.get("count_endpoint"):
+        return _refuse_candidate(run, cand, "no-count-endpoint",
+                         f"{cand['full_name'] or cand['id']}: a search result is a repository, not a "
+                         f"countable data endpoint — the count that admits a source is the source's "
+                         f"OWN row count and this surface publishes none, so the cycle may only "
+                         f"propose it (list it in a structured registry with its count_endpoint; a "
+                         f"DUMP declares `count_kind: file` instead)")
+    return True
+
+
+# ── A DUMP IS ITS OWN COUNT (req-P1-A-DUMP-IS-ITS-OWN-COUNT-so-a-zip-c) ───────────────────────
+# WHAT A FILE-SHAPED SOURCE PROVES, AND WHAT IT DOES NOT. An API source can be asked for its own
+# number; a dump cannot, so the claim must be weaker and must SAY so: `verified: file` — these are
+# the bytes (sha256), and this is how many records we parsed out of them. The honest weakness is
+# that a truncated download agrees with itself, so a short file is a REFUSAL, not a count: a byte
+# length shorter than the publisher's declaration is REFUSED[file-truncated] naming both lengths
+# (an unreadable archive is the same class), zero parsed records is REFUSED[no-rows], and when the
+# publisher states a number anywhere in the same bytes (release notes, a README, a manifest) ours
+# must equal it — REFUSED[count-mismatch] naming both numbers. Nothing on this path may ever be
+# reported as re-derived from the authority: a file's count is OUR count OF THAT FILE.
+DUMP_NOTES_SUFFIX = (".html", ".htm", ".md", ".rst", ".txt", "readme", "release", "changelog")
+DUMP_FORMATS = ("csv", "tsv", "obo", "json", "lines")
+
+
+def _dump_format(member: str) -> str:
+    """The record format a member's NAME declares. Nothing is sniffed beyond this: an unknown
+    extension is a NAMED refusal (REFUSED[format-unknown]), never a guess at the rows."""
+    ext = os.path.splitext(member.lower())[1]
+    return {".csv": "csv", ".tsv": "tsv", ".tab": "tsv", ".rpt": "tsv", ".txt": "tsv",
+            ".obo": "obo", ".json": "json", ".jsonl": "lines"}.get(ext, "")
+
+
+def _stated_count(text: str, phrase: str) -> tuple[int | None, str]:
+    """THE PUBLISHER'S OWN NUMBER, read from the publisher's own words: the sentence matching
+    `phrase` and the first number in it. Returns (number, quoted sentence) — (None, "") when the
+    phrase is not there, which the caller refuses BY NAME rather than treating as agreement."""
+    plain = _licence_plain(text)          # the same markup-stripping a person's page gets
+    m = re.search(re.escape(phrase) + r"[^0-9]{0,60}?([0-9][0-9,]*)", plain, re.I)
+    if not m:
+        return None, ""
+    # the quote is the matched span ITSELF, verbatim and greppable: "Number of human genes: 307"
+    return int(m.group(1).replace(",", "")), re.sub(r"\s+", " ", plain[m.start():m.end()]).strip()
+
+
+def count_dump(data: bytes, spec: dict) -> dict:
+    """THE ONE DERIVATION SITE FOR A DUMP'S COUNT — the cycle and the published `recount` command
+    both call THIS function, so a reader re-running the command counts exactly what the station
+    counted (a count published with no way to reproduce it is a claim, not a measurement).
+
+    `spec` is the candidate's own declaration: data_member · format · notes_member ·
+    stated_count_phrase. Returns dict(sha256, bytes, member, format, records, stated,
+    stated_quote, notes_member). Raises CycleRefused by NAME:
+      REFUSED[file-truncated]  the archive does not open / a member fails its CRC
+      REFUSED[no-rows]         zero records parse out of the bytes (an empty dump is not a source)
+      REFUSED[member-ambiguous] the archive holds several data members and the candidate names none
+      REFUSED[format-unknown]  no record format can be named for the member
+    """
+    out = dict(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data), member="", format="",
+               records=0, stated=None, stated_quote="", notes_member="")
+    member = str(spec.get("data_member") or "").strip()
+    notes = str(spec.get("notes_member") or "").strip()
+    payload: bytes
+    notes_bytes = b""
+    if data[:2] == b"PK":
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(data))
+            names = zf.namelist()
+            bad = zf.testzip()            # a truncated member fails its CRC here, not later
+            if bad:
+                raise CycleRefused("file-truncated",
+                                   f"the archive opens but member {bad!r} fails its CRC — the "
+                                   f"bytes are truncated or corrupt, and a file that agrees with "
+                                   f"itself is not evidence")
+            if not member:
+                cands = [n for n in names
+                         if _dump_format(n) and not any(h in n.lower() for h in
+                                                        ("readme", "release", "changelog"))]
+                if len(cands) != 1:
+                    raise CycleRefused("member-ambiguous",
+                                       f"the archive holds {len(names)} member(s) and "
+                                       f"{len(cands)} of them look like data ({cands or 'none'}) — "
+                                       f"the candidate must name `data_member`")
+                member = cands[0]
+            if member not in names:
+                raise CycleRefused("member-ambiguous",
+                                   f"the candidate names data_member {member!r} and the archive "
+                                   f"holds {names}")
+            payload = zf.read(member)
+            if not notes:
+                hinted = [n for n in names if n != member
+                          and any(h in n.lower() for h in DUMP_NOTES_SUFFIX)]
+                notes = hinted[0] if hinted else ""
+            if notes and notes in names:
+                notes_bytes = zf.read(notes)
+        except zipfile.BadZipFile as e:
+            raise CycleRefused("file-truncated",
+                               f"the {len(data)}-byte body is not a readable archive "
+                               f"({type(e).__name__}: {e}) — an archive that cannot be opened "
+                               f"cannot be counted") from e
+        except (zipfile.LargeZipFile, EOFError, OSError) as e:
+            raise CycleRefused("file-truncated",
+                               f"the {len(data)}-byte body is not a readable archive "
+                               f"({type(e).__name__}: {e})") from e
+    else:
+        payload, member = data, (member or str(spec.get("member") or "the file"))
+    fmt = str(spec.get("format") or "").strip().lower() or _dump_format(member)
+    if fmt not in DUMP_FORMATS:
+        raise CycleRefused("format-unknown",
+                           f"no record format can be named for {member!r} (declared "
+                           f"{spec.get('format')!r}); this version counts {list(DUMP_FORMATS)}")
+    text = payload.decode("utf-8", "replace")
+    if fmt in ("csv", "tsv"):
+        rows = [ln for ln in text.splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")]
+        delim = "," if fmt == "csv" else "\t"
+        try:
+            parsed = [r for r in csv.reader(rows, delimiter=delim) if any(c.strip() for c in r)]
+        except csv.Error as e:
+            raise CycleRefused("no-rows", f"{member!r} does not parse as {fmt}: {e}") from e
+        out["records"] = max(0, len(parsed) - 1)      # the first surviving row is the header
+    elif fmt == "obo":
+        out["records"] = len(re.findall(r"^\[Term\]", text, re.M))
+    elif fmt == "json":
+        try:
+            doc = json.loads(text)
+        except Exception as e:
+            raise CycleRefused("no-rows", f"{member!r} is not JSON ({type(e).__name__}: {e})") from e
+        if isinstance(doc, list):
+            out["records"] = len(doc)
+        elif isinstance(doc, dict):
+            seq = next((doc[k] for k in ("records", "rows", "data", "items") 
+                        if isinstance(doc.get(k), list)), None)
+            out["records"] = len(seq) if seq is not None else 1
+    else:
+        out["records"] = len([ln for ln in text.splitlines()
+                              if ln.strip() and not ln.lstrip().startswith("#")])
+    out.update(member=member, format=fmt, notes_member=notes)
+    phrase = str(spec.get("stated_count_phrase") or "").strip()
+    if phrase:
+        stated, quote = _stated_count(notes_bytes.decode("utf-8", "replace") if notes_bytes
+                                      else "", phrase)
+        out["stated"], out["stated_quote"] = stated, quote
+    return out
+
+
+def _recount_command(cand: dict) -> str:
+    """THE RE-DERIVATION COMMAND published beside every file count: a reader who has the same
+    bytes can reproduce the number with one line, using the same function the cycle used."""
+    q = ["python3", "-m", "symbiont.cycle", "recount", "--url", str(cand.get("url") or "")]
+    for key, flag in (("data_member", "--member"), ("format", "--format"),
+                      ("notes_member", "--notes-member"),
+                      ("stated_count_phrase", "--stated-phrase")):
+        if cand.get(key):
+            q += [flag, str(cand[key])]
+    return " ".join(shlex.quote(x) for x in q)
+
+
+def _file_verify(run: "Run", cand: dict) -> dict:
+    """VERIFY A DUMP FROM ITS OWN BYTES -> dict(verified="file", records, sha256, bytes, member,
+    stated, stated_quote, command) — or a NAMED refusal.
+
+    THE ORDER IS THE POINT: the publisher's declared length is checked FIRST (a short body is
+    refused naming both lengths, before its self-consistent rows can look like agreement), then
+    the archive must open, then the records must exceed zero, then the publisher's own stated
+    number (when there is one) must equal ours."""
+    sid = str(cand.get("id") or "?")
+    url = str(cand.get("url") or "")
+    declared = int(cand.get("declared_bytes") or 0)
+    try:
+        body = run.get_bytes(url, note=f"dump {sid}")
+    except CycleRefused as e:
+        raise CycleRefused(e.code, e.detail, fatal=e.fatal) from e
+    if declared and len(body) < declared:
+        raise CycleRefused("file-truncated",
+                           f"the file we read is {len(body)} byte(s) and the publisher declares "
+                           f"{declared} byte(s) ({url}) — a short file agrees with itself, which "
+                           f"is not evidence", fatal=False)
+    spec = dict(data_member=cand.get("data_member") or "", format=cand.get("format") or "",
+                notes_member=cand.get("notes_member") or "",
+                stated_count_phrase=cand.get("stated_count_phrase") or "")
+    try:
+        got = count_dump(body, spec)
+    except CycleRefused as e:
+        raise CycleRefused(e.code, e.detail, fatal=False) from e
+    if got["records"] <= 0:
+        raise CycleRefused("no-rows",
+                           f"zero records parsed from {got['member'] or 'the file'} "
+                           f"({len(body)} byte(s), sha256 {got['sha256']}) — an empty dump is not "
+                           f"a source", fatal=False)
+    phrase = spec["stated_count_phrase"]
+    if phrase and got["stated"] is None:
+        raise CycleRefused("count-unreadable",
+                           f"the candidate points at the publisher's words {phrase!r} and "
+                           f"{got['notes_member'] or 'the file'} states no number there — an "
+                           f"unreadable statement is not agreement", fatal=False)
+    if got["stated"] is not None and got["stated"] != got["records"]:
+        raise CycleRefused("count-mismatch",
+                           f"we parsed {got['records']} record(s) from {got['member']} in the "
+                           f"{len(body)}-byte file (sha256 {got['sha256']}) and the publisher "
+                           f"states {got['stated']} (“{got['stated_quote']}” in "
+                           f"{got['notes_member']}) — nothing carded, nothing admitted",
+                           fatal=False)
+    return dict(verified="file", records=got["records"], sha256=got["sha256"], bytes=len(body),
+                member=got["member"], format=got["format"], stated=got["stated"],
+                stated_quote=got["stated_quote"], notes_member=got["notes_member"],
+                declared_bytes=declared, url=url, command=_recount_command(cand))
+
+
+def _read_count(run: Run, cand: dict) -> int:
+    """THE CYCLE'S OWN COUNT — never the draft's self-report (a check that trusts the checked
+    thing is not a check). For `count_kind: file` the count the draft must equal is the count the
+    CYCLE parsed out of the same bytes at evaluation — not the draft's own row count."""
+    if str(cand.get("count_kind") or "endpoint") == "file":
+        fv = cand.get("file_verify") or {}
+        if "records" not in fv:
+            raise CycleRefused("no-rows", f"{cand.get('id')}: the dump was never counted from its "
+                                          f"own bytes — there is no count for the draft to meet")
+        return int(fv["records"])
+    url = cand.get("count_endpoint") or ""
+    if not url:
+        raise CycleRefused("no-count-endpoint",
+                           f"{cand['id']}: no count endpoint — the cycle cannot verify a count it "
+                           f"cannot read")
+    txt = run.get_text(url, note=f"count {cand['id']}")
+    m = re.search(r"-?\d+", txt)
+    if not m:
+        raise CycleRefused("count-unreadable",
+                           f"{cand['id']}: the count endpoint {url} answered no number "
+                           f"({txt[:80]!r})")
+    return int(m.group(0))
+
+
+def _cli(run: Run, args: list[str]) -> subprocess.CompletedProcess:
+    """Run the tested CLI that DEFINES the step — the cycle is an orchestrator, not a re-write."""
+    return subprocess.run([sys.executable, "-m", *args], cwd=FARM, capture_output=True, text=True,
+                          timeout=1800)
+
+
+def _admission_args(run: Run) -> list[str]:
+    a = run.admission
+    return ["--admission-dir", a["dir"], "--sources-config", a["sources_config"],
+            "--drafts-dir", a["drafts_dir"], "--adapters-dir", a["adapters_dir"],
+            "--gate-file", a["gate_file"], "--policy", a["policy"], "--store", run.store]
+
+
+def _step_pipeline(run: Run, cand: dict) -> None:
+    """4 DRAFT · 5 SANDBOX · 6 CARD · 7 ADMIT for one candidate that survived evaluation."""
+    sid = cand["id"]
+    a = run.admission
+    # -- 4 DRAFT (probe + evaluate are the tested steps that make a candidate real) -------------
+    if not run.cfg["draft"]["provider"]:
+        ver = cand.get("file_verify") or {}
+        row = dict(id=sid, why="draft.provider is empty — no drafting configured, so "
+                                      "nothing was built; a person admits or discards")
+        if ver:
+            row.update(verified="file", records=ver.get("records"), sha256=ver.get("sha256"),
+                       member=ver.get("member"), stated=ver.get("stated"),
+                       count_command=ver.get("command"))
+        run.proposed.append(row)
+        run.say(f"PROPOSED  {sid}  vetted and PROPOSED (draft.provider empty: nothing drafted, "
+                f"nothing admitted)")
+        if ver:
+            run.say(f"VERIFIED  {sid}  verified: file  {ver['records']} record(s) from "
+                    f"{ver['member']} in {ver['bytes']} byte(s) · sha256={ver['sha256']}"
+                    + (f" · the publisher states {ver['stated']}" if ver.get("stated") is not None
+                       else "")
+                    + f" · re-derive: {ver['command']}")
+        return
+    for step, extra in (("probe", ["--id", sid, "--licence-url", cand.get("licence_url", ""),
+                                   "--count-kind", str(cand.get("count_kind") or "endpoint")]),
+                        ("evaluate", []), ("draft", [])):
+        args = [step]
+        if step == "probe":
+            args += [cand["url"]]
+        else:
+            args += [sid]
+        p = _cli(run, ["symbiont.admission", *args, *extra, *_admission_args(run)])
+        if p.returncode != 0:
+            code = _refusal_code(p.stdout + p.stderr, "draft-refused")
+            run.note_refusal(code, f"{sid}: source_{step} exited {p.returncode}: "
+                                   f"{(p.stdout or p.stderr).strip().splitlines()[-1][:200]}")
+            return
+    # the deployment's own provider writes the adapter (it is run with the candidate and the path)
+    draft_path = os.path.join(a["drafts_dir"], f"{sid}.py")
+    cand_path = os.path.join(a["dir"], sid, "candidate.json")
+    before = os.path.getmtime(draft_path) if os.path.isfile(draft_path) else 0.0
+    prov = run.cfg["draft"]["provider"]
+    p = subprocess.run([prov, cand_path, draft_path], cwd=FARM, capture_output=True, text=True,
+                       timeout=1800)
+    wrote = os.path.isfile(draft_path) and os.path.getmtime(draft_path) > before
+    if p.returncode != 0 or not wrote:
+        run.note_refusal("draft-no-output",
+                         f"{sid}: the configured provider {prov!r} exited {p.returncode} and "
+                         f"{'wrote' if wrote else 'never wrote'} {_rel(draft_path)} — a candidate "
+                         f"without a draft is not drafted")
+        return
+    run.drafted.append(sid)
+    run.say(f"DRAFTED   {sid}  provider={prov} -> {_rel(draft_path)}")
+
+    # -- 5 SANDBOX (the tested throwaway store, the cycle's own budget) -------------------------
+    budget = run.cfg["budget"]
+    p = _cli(run, ["symbiont.admission", "sandbox", sid,
+                   "--budget-requests", str(budget["requests"]),
+                   "--budget-bytes", str(budget["bytes"]),
+                   "--budget-wall-s", str(budget["wall_s"]), *_admission_args(run)])
+    if p.returncode != 0:
+        code = _refusal_code(p.stdout + p.stderr, "sandbox-refused")
+        run.note_refusal(code, f"{sid}: source_sandbox exited {p.returncode}: "
+                               f"{(p.stdout or p.stderr).strip().splitlines()[-1][:200]}")
+        return
+    receipts = sorted(glob.glob(os.path.join(a["dir"], sid, "sandbox-*.receipt.json")))
+    if not receipts:
+        run.note_refusal("sandbox-no-receipt", f"{sid}: the sandbox wrote no receipt under "
+                                                f"{_rel(os.path.join(a['dir'], sid))}")
+        return
+    receipt = json.load(open(receipts[-1], encoding="utf-8"))
+    try:
+        theirs = _read_count(run, cand)
+    except CycleRefused as e:
+        if e.code == "budget":
+            raise                       # the cycle's own budget STOPPED it: never a per-candidate note
+        run.note_refusal(e.code, f"{sid}: {e.detail}")
+        return
+    ours = receipt.get("records")
+    if ours != theirs:
+        run.note_refusal("count-mismatch",
+                         f"{sid}: the sandbox produced {ours} record(s) and the source's own count "
+                         f"endpoint {cand['count_endpoint']} says {theirs} — nothing carded, "
+                         f"nothing admitted (a source that fails its count check never admits, "
+                         f"regardless of policy)")
+        return
+    run.sandboxed.append(dict(id=sid, ours=ours, theirs=theirs, receipt=_rel(receipts[-1]),
+                              cost=receipt.get("cost") or {}))
+    run.say(f"SANDBOXED {sid}  count VERIFIED ours={ours} = source={theirs} "
+            f"({_rel(receipts[-1])})")
+
+    # -- 6 CARD ---------------------------------------------------------------------------------
+    p = _cli(run, ["symbiont.admission", "card", sid, "--question", cand.get("question") or "",
+                   *_admission_args(run)])
+    card = os.path.join(a["dir"], sid, "card.md")
+    if p.returncode != 0 or not os.path.isfile(card):
+        code = _refusal_code(p.stdout + p.stderr, "card-refused")
+        run.note_refusal(code, f"{sid}: source_card exited {p.returncode}: "
+                               f"{(p.stdout or p.stderr).strip().splitlines()[-1][:200]}")
+        return
+    run.carded.append(_rel(card))
+    run.say(f"CARDED    {sid}  {_rel(card)}")
+
+    # -- 7 ADMIT — the one gated step -----------------------------------------------------------
+    if not run.cfg["admit"]["by_policy"]:
+        run.proposed.append(dict(id=sid, why="admit.by_policy is false — the cycle PROPOSES; a "
+                                              "person admits (the shipped default)"))
+        run.say(f"PROPOSED  {sid}  card is green, admit.by_policy=false: the cycle proposes, a "
+                f"person admits")
+        return
+    checks = _card_checks(card)
+    required = _required_checks(run)
+    failed = [k for k in required if checks.get(k, "").lower() != "ok"]
+    if failed:
+        run.note_refusal("card-check",
+                         f"{sid}: required card check(s) not green ({', '.join(failed)}) — a source "
+                         f"failing one required check never self-admits, regardless of N")
+        return
+    p = _cli(run, ["symbiont.admission", "admit", sid, *_admission_args(run)])
+    if p.returncode != 0:
+        code, why = _admit_refusal(p.stdout + p.stderr)
+        run.note_refusal(code, f"{sid}: source_admit exited {p.returncode}: {why}")
+        return
+    rec = os.path.join(a["dir"], sid, "admitted.json")
+    line = ""
+    if os.path.isfile(rec):
+        try:
+            line = ((json.load(open(rec, encoding="utf-8")).get("policy") or {}).get("line") or "")
+        except Exception:
+            line = ""
+    run.admitted.append(dict(id=sid, record=_rel(rec), line=line,
+                             checks=checks, required=required))
+    run.say(f"ADMITTED  {sid}  {line or '(the receipt quotes no rule — FINDING)'} "
+            f"record={_rel(rec)}")
+
+
+def _card_checks(card_path: str) -> dict:
+    checks: dict[str, str] = {}
+    for m in re.finditer(r"^check[ \t]+([a-z0-9_]+):[ \t]*(\S.*)$",
+                         open(card_path, encoding="utf-8", errors="replace").read(), re.M):
+        checks[m.group(1)] = m.group(2).strip()
+    return checks
+
+
+def _required_checks(run: Run) -> list[str]:
+    """The checks the owner's policy requires — ONE definition site, the policy file."""
+    try:
+        return admission_policy.required_checks(
+            admission_policy.load_policy(run.admission["policy"]))
+    except admission_policy.PolicyError as e:
+        raise CycleRefused("policy", f"the admission policy could not be read, so the required "
+                                     f"card checks are unknown: {e}") from e
+
+
+def _refusal_code(text: str, default: str) -> str:
+    m = re.search(r"REFUSED\[([a-z0-9-]+)\]", text)
+    return m.group(1) if m else default
+
+
+def _admit_refusal(out: str) -> tuple[str, str]:
+    """The refusal class `source_admit` actually gave. Under admit.by_policy the decision that
+    matters is the POLICY's own verdict — `does NOT self-admit [cycles] … N=<n>` — not the gate
+    line it falls back to (the operator's word is demanded only because the policy said no), so the
+    cycle quotes the policy's class and its reason, N included."""
+    m = re.search(r"does NOT self-admit \[([a-z0-9-]+)\]\s*(.+)", out)
+    if m:
+        code, reason = m.group(1), m.group(2).strip().splitlines()[0]
+        gate = re.search(r"REFUSED\[(?:gate|admit)\][^\n]*", out)
+        return code, reason + (" · then " + gate.group(0)[:160] if gate else "")
+    return _refusal_code(out, "admit-refused"), (out.strip().splitlines()[-1][:220]
+                                                  if out.strip() else "(no output)")
+
+
+# ── RECONSIDERED REOPENS A CANDIDATE (req-P1-RECONSIDERED-MUST-REOPEN-A-CANDIDATE) ──────────
+# A refusal must never be PERMANENT: the operator's fix for the thing that caused it can only be
+# TESTED through the station if the station looks again, and the only alternative — editing the
+# diary by hand — is exactly what the log forbids. The transition is not new and not invented here:
+# the diary's own table carries `refused -> reconsidered -> evaluated` (diary.TRANSITIONS), and
+# `retired`, `vanished` and `admitted` reach an evaluation the SAME way, THROUGH `reconsidered`.
+# So the cycle READS that word instead of treating every prior state as 'not new'. It is the ONE
+# nonzero state that reopens; any other state still skips, and the report says WHY by NAME.
+REOPENED_BY_THE_CYCLE = frozenset({"reconsidered"})
+
+# DELIVER 2: a skip must say WHY, and a state the cycle will not reopen must say why NOT — with
+# the one route back that the table actually allows, so the operator is never told 'not new' and
+# left to guess. States absent from this map are described from the table itself.
+_SKIP_WHY = {
+    "admitted": ("'admitted' CANNOT be reopened by the cycle: the source is already IN the "
+                 "registry, so re-observing it is a count/release question and a second "
+                 "evaluation would be the factory re-deciding a decision it has already made"),
+    "refused": ("it is 'refused' and no fix is on record yet — an operator who has fixed what "
+                "caused the refusal writes `registry add-event --class reconsidered` and the "
+                "next cycle EVALUATES it"),
+    "retired": ("it is 'retired': the table allows only 'reconsidered' (or 'retired' again) "
+                "after it, so an operator who wants it evaluated writes `registry add-event "
+                "--class reconsidered` first"),
+}
+_OBSERVATION_STATES = frozenset({"acquired", "first_harvest", "count_ok", "count_mismatch",
+                                 "release_moved", "schema_changed", "stale", "unreadable",
+                                 "quarantined", "unquarantined"})
+
+
+def _why_not_new(state: str | None) -> str:
+    """The reason a candidate was NOT re-evaluated, naming the state (DELIVER 2)."""
+    if state is None:
+        return ("the seen-set already carried it and the diary holds NO state for this identity — "
+                "nothing was ever refused, evaluated or admitted under it")
+    if state in _SKIP_WHY:
+        return _SKIP_WHY[state]
+    if state in _OBSERVATION_STATES:
+        return (f"'{state}' is an OBSERVATION of a source the factory already holds — re-seeing "
+                f"it is a count/release question, never a fresh evaluation")
+    return (f"'{state}' is not reopenable by the cycle: the table allows "
+            f"{sorted(events.TRANSITIONS.get(state) or ())} after it, and only 'reconsidered' "
+            f"reopens a candidate")
+
+
+def _reopen_origin(prior, source_id: str) -> str:
+    """The state a `reconsidered` actually reopened (the last class before it that is not itself a
+    reconsideration) — so the new attempt's own `evaluated` line says what it came back FROM, and
+    the history stays readable: refused -> reconsidered -> evaluated -> refused|admitted."""
+    seen = [e.get("class") for e in prior.events_of(source_id)
+            if e.get("class") not in events.INTENT_CLASSES
+            and e.get("class") not in REOPENED_BY_THE_CYCLE]
+    return seen[-1] if seen else "(no prior state)"
+
+
+def step_discover(run: Run, surfaces: list[dict]) -> None:
+    """2 · DISCOVER over the registry, then EVALUATE and the pipeline, per candidate.
+
+    RE-OBSERVATION IS NOT A STATE CHANGE (req-P1-THE-DIARY-REFUSES-RE-OBSERVATION). The old writer
+    emitted `discovered` at the point of OBSERVATION, and one run can observe the same candidate
+    more than once (the same result from two queries; the same id from two surfaces; a candidate
+    the published seen-set already carried), so the diary — rightly — answered
+    REFUSED[illegal-transition]: 'discovered' may not follow 'discovered'. The fix is HERE and not
+    in the table: every observation lands in ONE per-run ledger keyed by the diary's source_id, the
+    ledger COUNTS them (`occurrences`, `seen_before`), and the run writes AT MOST ONE idempotent
+    `discovered` event per candidate — after the sweep, so the count on the line is the run's real
+    count and not a guess (an append-only line cannot be amended afterwards).
+
+    A candidate the published seen-set already carried is counted as SEEN and writes NO transition
+    at all; the summary says '0 new · N seen', which is the normal, readable result of a quiet
+    sweep. A candidate the DIARY already records is treated the same way (the diary is the state
+    machine; a second 'discovered' for it would be exactly the lie this row is about).
+
+    """
+    seen = _seen_load(run)                  # what PREVIOUS runs knew: the re-observation test
+    seen_out = open(_seen_path(run), "a", encoding="utf-8") if _ensure_dir(run.state_dir) else None
+    observed = run.observations    # THE LEDGER: diary source_id -> one record per run (on the RUN,
+                                   # so `_refuse_candidate` and the report read the same counts)
+
+    def observe(cand: dict, surface_id: str, query: str = "") -> None:
+        """THE ONE PLACE AN OBSERVATION IS RECORDED — counts it, and nothing else is written.
+
+        `already` is asked of the seen-set as it stands NOW, so a key is counted new at most once
+        per run: the second query that returns it is a RE-observation (seen), not a discovery."""
+        sid, key = str(cand.get("id") or "?"), str(cand.get("key") or "")
+        rec = observed.get(sid)
+        if rec is None:
+            rec = observed[sid] = dict(cand=cand, occurrences=0, seen_before=0, keys=[],
+                                       observations=[], new=False)
+        if key in seen:
+            run.looked["seen"] += 1
+            rec["seen_before"] += 1          # it had been seen before THIS observation
+        else:
+            run.looked["new"] += 1
+            seen.add(key)                    # IN-RUN: a later query does not re-discover it
+            rec["new"] = True
+            if seen_out:
+                seen_out.write(json.dumps(dict(key=key, at=_utc())) + "\n")
+        rec["occurrences"] += 1
+        if key not in rec["keys"]:
+            rec["keys"].append(key)
+        rec["observations"].append(dict(surface=surface_id, query=query, url=cand.get("url", "")))
+
+    for surface in surfaces:
+        kind = surface.get("kind")
+        if kind not in KINDS:
+            raise CycleRefused("surface-kind-unknown",
+                               f"surface {surface.get('id')!r} names kind {kind!r}; this version "
+                               f"reads {list(KINDS)} — it will not guess how to read a surface")
+        run.looked["surfaces"] += 1
+        if kind == "listed":
+            for c in surface.get("candidates") or []:
+                _need(isinstance(c, dict) and c.get("id") and c.get("url"),
+                      f"surface {surface['id']!r}: every listed candidate needs an id and a url",
+                      "surface-schema")
+                run.looked["queries"] += 1
+                observe(dict(id=c["id"], key=f"listed:{c['id']}", full_name=c["id"],
+                             url=c["url"], licence_url=c.get("licence_url", ""),
+                             count_endpoint=c.get("count_endpoint", ""),
+                             # A DUMP IS ITS OWN COUNT (req-P1-A-DUMP-IS-ITS-OWN-COUNT): the
+                             # candidate declares HOW its count is established, and the dump's own
+                             # counting fields are carried through untouched.
+                             count_kind=c.get("count_kind") or "endpoint",
+                             declared_bytes=c.get("declared_bytes") or 0,
+                             data_member=c.get("data_member", ""),
+                             format=c.get("format", ""),
+                             notes_member=c.get("notes_member", ""),
+                             stated_count_phrase=c.get("stated_count_phrase", ""),
+                             rate_limit=c.get("rate_limit") or {},
+                             question=c.get("question", ""),
+                             licence=c.get("licence", ""), archived=False,
+                             pushed_at="", surface=surface["id"]),
+                        surface["id"])
+            continue
+
+        # github_search: every listed query is read, and LOGGED with its own count
+        queries: list[str] = []
+        for q in surface.get("queries") or []:
+            queries.extend(_expand_seed(run, surface, q) if q.startswith("seed:") else [q])
+        for q in queries:
+            run.looked["queries"] += 1
+            url = f"{surface['endpoint']}?q={_quote(q)}&per_page={int(surface['per_page'])}"
+            try:
+                body = run.get_json(url, note=f"search {q}")
+            except CycleRefused as e:
+                if e.fatal:
+                    raise                    # budget: the run STOPS mid-cycle (A6), never a note
+                run.queries.append(dict(surface=surface["id"], query=q, url=url, count=None,
+                                        new=0, error=e.code))
+                run.note_refusal(e.code, f"surface {surface['id']} query {q!r}: {e.detail}")
+                run.looked["errors"] += 1
+                continue
+            total = body.get("total_count")
+            items = body.get("items") or []
+            new_before = run.looked["new"]
+            for item in items:
+                observe(_api_candidate(run, surface, item), surface["id"], query=q)
+            new = run.looked["new"] - new_before      # THIS query's own new count
+            run.queries.append(dict(surface=surface["id"], query=q, url=url, count=total, new=new,
+                                    error=""))
+            run.say(f"QUERY     {surface['id']} {q!r} -> {total} result(s), {new} new")
+    if seen_out:
+        seen_out.close()
+
+    run.say(f"I looked: {run.looked['surfaces']} surface(s) · {run.looked['queries']} "
+            f"quer{'y' if run.looked['queries'] == 1 else 'ies'} · {run.looked['new']} new"
+            f" · {run.looked['seen']} seen"
+            + (f" · {run.looked['errors']} error(s), each named above" if run.looked["errors"] else ""))
+    run.steps_done.append(f"discovery({run.looked['queries']} queries, {run.looked['new']} new, "
+                          f"{run.looked['seen']} seen)")
+
+    # ── ONE `discovered` LINE PER CANDIDATE, THEN EVALUATE ─────────────────────────────────────
+    # Written after the sweep (the count must be complete before an append-only line is written),
+    # and written only for a candidate that is new to BOTH the seen-set and the diary. Everything
+    # else is a re-observation: counted, named in the report, and NOT a transition.
+    prior_diary = events.read(run.store)
+    candidates: list[dict] = []
+    for sid, rec in observed.items():
+        state = prior_diary.state_of(sid)
+        # RECONSIDERED REOPENS A CANDIDATE (req-P1-RECONSIDERED-MUST-REOPEN-A-CANDIDATE): otherwise
+        # a refusal is permanent and the fix that answers it can never be TESTED. `reconsidered` is
+        # the ONE nonzero state that makes a candidate evaluable again — from the diary's test AND
+        # from the seen-set test below, because a candidate refused by an earlier run is ALWAYS in
+        # the published seen-set by then (measured: `0 new · 1 seen`, and the old code answered
+        # 'seen again' for it even after the operator wrote the transition). Every other prior state
+        # still skips, and the report says WHY, naming the state (DELIVER 2).
+        reopened = state in REOPENED_BY_THE_CYCLE
+        if state is not None and not reopened:
+            run.seen_again.append(dict(
+                id=sid, occurrences=rec["occurrences"], seen_before=rec["seen_before"],
+                keys=list(rec["keys"]), state=state,
+                why=f"the diary already records '{state}' for it, and {_why_not_new(state)}"))
+            continue
+        if not rec["new"] and not reopened:
+            run.seen_again.append(dict(
+                id=sid, occurrences=rec["occurrences"], seen_before=rec["seen_before"],
+                keys=list(rec["keys"]), state=state, why=_why_not_new(state)))
+            continue
+        if reopened:
+            rec["cand"]["reopened_from"] = _reopen_origin(prior_diary, sid)
+            run.say(f"REOPENED  {sid}  the diary's last state is 'reconsidered' (it came back "
+                    f"from '{rec['cand']['reopened_from']}') — this run EVALUATES it again")
+        first = rec["observations"][0] if rec["observations"] else {}
+        # A REOPENED CANDIDATE IS NOT REDISCOVERED (req-P1-RECONSIDERED-MUST-REOPEN-A-CANDIDATE):
+        # the diary's table refuses `discovered` after `reconsidered`, and rightly so — it was
+        # discovered once; what follows a reconsideration is an EVALUATION, recorded below.
+        if not reopened:
+            run.diary(rec["cand"], "discovered",
+                      f"surface {first.get('surface')}"
+                      + (f" query {first.get('query')!r}" if first.get("query") else "")
+                      + f" returned {rec['cand'].get('full_name') or sid} (run {run.run_id}; observed "
+                        f"{rec['occurrences']} time(s) this run, seen before {rec['seen_before']})",
+                      dict(surface=first.get("surface", ""), query=first.get("query", ""),
+                           url=rec["cand"].get("url", ""), occurrences=rec["occurrences"],
+                           seen_before=rec["seen_before"], keys=list(rec["keys"]),
+                           observations=rec["observations"][:8]))
+        candidates.append(rec["cand"])
+
+    for cand in candidates:
+        run.found.append({k: cand.get(k) for k in ("id", "key", "full_name", "url", "licence",
+                                                   "surface", "count_endpoint", "count_kind")})
+        if cand.get("reopened_from"):   # DELIVER 1: the record says WHAT reopened it, and from where
+            run.found[-1]["reopened_from"] = cand["reopened_from"]
+        survives = _evaluate(run, _surface_of(surfaces, cand["surface"]), cand)
+        ver = cand.get("file_verify") or {}
+        if ver:                     # THE ROW'S OWN LABEL: a file count is verified: file, always
+            run.found[-1].update(verified="file", records=ver.get("records"),
+                                 sha256=ver.get("sha256"), count_command=ver.get("command"),
+                                 stated=ver.get("stated"))
+        if not survives:
+            # the gate ran even when a LATER rule refused it: the record still says how the terms
+            # were read, so 'refused' never hides a licence the run actually read (row DELIVER 4).
+            gate = cand.get("licence_gate") or {}
+            run.found[-1].update(licence=gate.get("licence") or cand.get("licence") or "",
+                                 licence_how=gate.get("how", ""),
+                                 licence_actor=gate.get("actor", ""))
+            continue
+        gate = cand.get("licence_gate") or {}
+        run.found[-1].update(licence=gate.get("licence") or cand.get("licence") or "",
+                             licence_how=gate.get("how", ""),
+                             licence_actor=gate.get("actor", ""))
+        run.diary(cand, "evaluated",
+                  f"licence {gate.get('licence') or '(unreadable)'} read ({gate.get('how')} by "
+                  f"{gate.get('actor')}: {str(gate.get('quote') or '')[:100]!r}), count "
+                  + (f"taken from the file's own bytes (verified: file, {ver.get('records')} "
+                     f"record(s), sha256 {ver.get('sha256')})"
+                     if ver else f"endpoint {cand.get('count_endpoint')}")
+                  + f", rate limit fits the run's budget, neither "
+                  f"archived nor dead — the candidate survives EVALUATE (run {run.run_id})"
+                  + (f" — REOPENED by 'reconsidered', from '{cand['reopened_from']}'"
+                     if cand.get("reopened_from") else ""),
+                  dict(licence=gate.get("licence") or cand.get("licence"),
+                       licence_gate={k: gate.get(k) for k in ("how", "actor", "url", "sha256",
+                                                              "quote", "licence")},
+                       count_endpoint=cand.get("count_endpoint"),
+                       count_kind=cand.get("count_kind") or "endpoint",
+                       verification=({k: ver.get(k) for k in ("verified", "records", "sha256",
+                                                             "member", "statement",
+                                                             "command")} if ver else None),
+                       rate_limit=cand.get("rate_limit") or {}, surface=cand.get("surface"),
+                       # DELIVER 1: the line itself says the candidate came back on the
+                       # operator's word, so the history reads refused -> reconsidered -> evaluated.
+                       **({"reopened_from": cand["reopened_from"]} if cand.get("reopened_from")
+                          else {})),
+                  actor=gate.get("actor") or "machine")
+        _step_pipeline(run, cand)
+    run.steps_done.append(f"pipeline({len(run.drafted)} drafted, {len(run.sandboxed)} sandboxed, "
+                          f"{len(run.carded)} carded, {len(run.admitted)} admitted, "
+                          f"{len(run.proposed)} proposed)")
+
+
+def _surface_of(surfaces: list[dict], sid: str) -> dict:
+    for s in surfaces:
+        if s.get("id") == sid:
+            return s
+    return {}
+
+
+def _quote(q: str) -> str:
+    import urllib.parse
+    return urllib.parse.quote(q, safe="")
+
+
+def _ensure_dir(path: str) -> bool:
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return False
+    return True
+
+
+# ═══════════════════════════════════════════════════════════ 5 · THE REPORT AND THE RECORD
+def _bullets(items: list[str]) -> list[str]:
+    return items or ["- none"]
+
+
+def _gate_counts(rows: list[dict]) -> str:
+    """WHICH of the ways satisfied the licence gate, counted: fetched · declared · absent (+ api
+    when a code-host surface published an spdx_id). The three the row names come first and are
+    always printed — a zero is an answer too."""
+    n = {k: sum(1 for r in rows if r.get("how") == k)
+         for k in ("fetched", "declared", "absent", "api")}
+    out = (f"fetched {n['fetched']} \u00b7 declared {n['declared']} \u00b7 absent {n['absent']}")
+    return out + (f" \u00b7 api {n['api']}" if n["api"] else "")
+
+
+def write_report(run: Run) -> str:
+    """The CYCLE-REPORT: found · refused (rule named) · drafted · sandboxed · admitted · cost, and
+    the "I looked" line — printed on a quiet week too, because a cycle that changes nothing is
+    still a cycle that LOOKED (DESIGN §3 step 8)."""
+    _ensure_dir(run.report_dir)
+    b = run.cfg["budget"]
+    cost = run.cost
+    looked = (f"I looked: {run.looked['surfaces']} surface(s) · {run.looked['queries']} "
+              f"quer{'y' if run.looked['queries'] == 1 else 'ies'} · {run.looked['new']} new"
+              f" · {run.looked['seen']} seen")
+    if run.looked["errors"]:
+        looked += f" · {run.looked['errors']} error(s), each named below"
+    # WHICH SURFACE SET, AND WHICH BUDGET (req-P2-THE-AGING-SUBDOMAIN-SWEEP). Two lines, both read
+    # off the config the run actually loaded: the PROFILE the operator selected with the registry it
+    # resolved to and that registry's own sha256 (so "which surface did it read" is answerable from
+    # the report alone), and the budget IN FORCE with the file's own top-level budget beside it (so a
+    # profile's declared budget can be checked, and a silent change to either cannot pass unnoticed).
+    prof = run.cfg.get("_profile") or {}
+    fbud = run.cfg.get("_file_budget") or b
+    reg_path = _path(run.cfg, "surfaces", "registry")
+    reg_sha = _sha_file(reg_path) if os.path.isfile(reg_path) else "(missing)"
+    if prof.get("name"):
+        profile_line = (f"profile `{prof['name']}` (`surfaces.active` of {len(prof.get('profiles') or [])} "
+                        f"declared: {', '.join('`%s`' % p for p in (prof.get('profiles') or []))}) "
+                        f"· surfaces `{_rel(reg_path)}` sha256 {reg_sha[:16]}…")
+    else:
+        profile_line = ("profile — (no `surfaces.profiles` declared: `surfaces.registry` is the only "
+                        "surface set)")
+    budget_line = (f"budget requests={b['requests']} bytes={b['bytes']} wall_s={b['wall_s']} — "
+                   f"{prof.get('budget_source') or BUDGET_SOURCE_FILE}"
+                   + (f" (the file's top-level budget is requests={fbud['requests']} "
+                      f"bytes={fbud['bytes']} wall_s={fbud['wall_s']}, untouched — the measurement "
+                      f"is recorded in reports/DECISION-AGING-SUBDOMAIN-SWEEP.md)"
+                      if (prof.get("name") and b != fbud) else "")
+                   + f" · spent requests={cost['requests']} bytes={cost['bytes_in']} "
+                     f"wall={cost['wall_s']}s")
+    L = [f"# CYCLE-REPORT — {run.run_id}",
+         "",
+         f"mode `{run.mode}` · config `{_rel(run.cfg['_path'])}` (sha256 "
+         f"{run.cfg['_sha256'][:16]}…) · surfaces `{_rel(_path(run.cfg, 'surfaces', 'registry'))}`",
+         profile_line,
+         f"started {run.started_at} · outcome **{run.stopped or 'completed'}**"
+         + (f" — {run.stop_detail}" if run.stop_detail else ""),
+         budget_line,
+         f"last run: {run.last_run_note or 'none on record'}",
+         "",
+         f"## found — {len(run.found)} candidate(s)"]
+    L += _bullets([f"- `{c['id']}` — {c.get('full_name') or c.get('url')} (licence "
+                   f"{c.get('licence') or 'UNREAD'} via {c.get('licence_how') or 'not evaluated'}"
+                   f", surface `{c.get('surface')}`)"
+                   # DELIVER 1 (req-P1-RECONSIDERED-MUST-REOPEN-A-CANDIDATE): a candidate that came
+                   # back on the operator's `reconsidered` says so HERE — in the run's own report,
+                   # next to the licence it was re-read from, not only in the diary.
+                   + (f" — REOPENED by 'reconsidered' from '{c['reopened_from']}'"
+                      if c.get("reopened_from") else "")
+
+                   for c in run.found])
+    dumps = [c for c in run.found if c.get("verified") == "file"]
+    L += ["", f"## dumps verified from their own bytes — {len(dumps)}",
+          "each line carries `verified: file`: the sha256 pins WHICH bytes we read, the record "
+          "count is OUR count OF THAT FILE, and the re-derivation command reproduces both from "
+          "the same bytes. Nothing here is claimed as re-derived from the authority: a dump that "
+          "agrees with itself (a truncated download, an empty file) is a refusal, not a count"]
+    L += _bullets([f"- `{d['id']}` — **verified: file** · {d.get('records')} record(s) · "
+                   f"sha256={d.get('sha256')}"
+                   + (f" · the publisher states {d['stated']}" if d.get("stated") is not None else
+                      " · the publisher states no number in the same bytes")
+                   + f" · re-derive: `{d.get('count_command')}`" for d in dumps])
+    L += ["", f"## licence gate — {len(run.licence_gate)} candidate(s) ({_gate_counts(run.licence_gate)})",
+          "each line names HOW the terms were read: `api` (the surface's own spdx_id) · `fetched` "
+          "(the candidate's declared licence_url, read ONCE, url + sha256 on record) · `declared` "
+          "(the OPERATOR's own words, verbatim, sha256 on record) · `absent` (neither — "
+          "REFUSED[licence-unreadable], naming BOTH attempted reads)"]
+    L += _bullets([f"- `{g['id']}` — **{g['how']}** by {g['actor'] or 'nobody'} · licence "
+                   f"`{g['licence'] or '(none)'}`"
+                   + (f" · page `{g['url']}` sha256={g['sha256']}" if g["url"] and g["sha256"] else
+                      (f" · text sha256={g['sha256']}" if g["sha256"] else ""))
+                   + (f" · quote: \u201c{g['quote'][:200]}\u201d" if g["quote"] else "")
+                   + (f" · {g['note']}" if g["note"] and g["how"] != "absent" else "")
+                   + (f" · attempts: {g['refusal']}" if g["how"] == "absent" else "")
+                   for g in run.licence_gate])
+    L += ["", f"## seen again — {len(run.seen_again)} (a re-observation is NOT a transition, so no "
+               f"event was written; each line says WHY it was skipped and NAMES the diary state)"]
+    L += _bullets([f"- `{s['id']}` seen {s['occurrences']}× this run (seen before: "
+                   f"{s['seen_before']}) — {s['why']}" for s in run.seen_again])
+    if run.reobserved:
+        L += ["", f"## the writer would not ask twice — {len(run.reobserved)}"]
+        L += _bullets([f"- `{r['source_id']}` '{r['event_class']}' was already written this run "
+                       f"(occurrences: {r['occurrences']}) — suppressed, the ONE line stands"
+                       for r in run.reobserved])
+    L += ["", f"## refused — {len(run.refused)} (the rule is NAMED, always)"]
+    L += _bullets([f"- REFUSED[{r['code']}] {r['detail']}" for r in run.refused])
+    L += ["", f"## drafted — {len(run.drafted)}"]
+    L += _bullets([f"- {s}" for s in run.drafted])
+    L += ["", f"## sandboxed — {len(run.sandboxed)}"]
+    L += _bullets([f"- `{s['id']}` count VERIFIED ours={s['ours']} = source={s['theirs']} · "
+                   f"receipt `{s['receipt']}`" for s in run.sandboxed])
+    L += ["", f"## carded — {len(run.carded)}"]
+    L += _bullets([f"- `{c}`" for c in run.carded])
+    L += ["", f"## admitted — {len(run.admitted)}"]
+    L += _bullets([f"- `{a['id']}` — {a['line'] or 'NO RULE QUOTED — FINDING'} · record `{a['record']}`"
+                   for a in run.admitted])
+    L += ["", f"## proposed (a person decides) — {len(run.proposed)}"]
+    L += _bullets([f"- `{p['id']}` — {p['why']}" for p in run.proposed])
+    L += ["", "## telemetry"]
+    L += _bullets([f"- `{t['digest'] or '(none)'}`: {t['lines']} measured line(s)"
+                   + (f" — {t['note']}" if t.get("note") else "") for t in run.telemetry])
+    L += ["", "## queries (each logged with its own count)"]
+    L += _bullets([f"- `{q['query']}` -> {q['count']} result(s) · {q['new']} new"
+                   + (f" · REFUSED[{q['error']}]" if q.get("error") else "") for q in run.queries]
+                  or ([] if run.mode != "watch" else ["- none (mode watch: nothing was looked for)"]))
+    L += ["", f"**{looked}**", "",
+          "## cost",
+          f"requests={cost['requests']} · bytes_in={cost['bytes_in']} · wall_s={cost['wall_s']} · "
+          f"rate_limit_waits={cost['rate_limit_waits']}",
+          "", f"steps: {', '.join(run.steps_done) or 'none'}", ""]
+    with open(run.report_path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(L))
+    return run.report_path
+
+
+def write_record(run: Run, outcome: str) -> str:
+    _ensure_dir(run.state_dir)
+    rec = dict(run_id=run.run_id, mode=run.mode, started_at=run.started_at, at=_utc(),
+               outcome=outcome, stopped=run.stopped, stop_detail=run.stop_detail,
+               steps_done=run.steps_done, config=_rel(run.cfg["_path"]),
+               config_sha256=run.cfg["_sha256"], report=_rel(run.report_path),
+               report_sha256=_sha_file(run.report_path) if os.path.isfile(run.report_path) else "",
+               # WHICH SURFACE SET THIS RUN READ, AND WHICH BUDGET WAS IN FORCE
+               # (req-P2-THE-AGING-SUBDOMAIN-SWEEP): the profile the operator selected, the
+               # registry it resolves to, and BOTH budgets — the profile's declared one (in force)
+               # and the file's own top-level one (untouched), so neither can change silently.
+               profile=dict(name=(run.cfg.get("_profile") or {}).get("name", ""),
+                            profiles=list((run.cfg.get("_profile") or {}).get("profiles") or []),
+                            registry=_rel(_path(run.cfg, "surfaces", "registry")),
+                            registry_sha256=(_sha_file(_path(run.cfg, "surfaces", "registry"))
+                                             if os.path.isfile(_path(run.cfg, "surfaces",
+                                                                     "registry")) else ""),
+                            budget_source=(run.cfg.get("_profile") or {}).get(
+                                "budget_source", BUDGET_SOURCE_FILE)),
+               budget_file=dict(run.cfg.get("_file_budget") or run.cfg["budget"]),
+               # THE EVIDENCE LEDGER — one row per candidate this run found NEW, carrying the
+               # surface's own words about it (description · topics) and the class it fell to, so
+               # a lane can rank by EVIDENCE SHAPE without asking the surface again. `stars` is
+               # here to be IGNORED (and to prove it was ignored).
+               evidence=run.evidence(),
+               looked=run.looked, cost=run.cost, budget=run.cfg["budget"],
+               budget_left=run.budget_left,
+               found=run.found, refused=run.refused, drafted=run.drafted,
+               licence_gate=run.licence_gate,
+               seen_again=run.seen_again, reobserved=run.reobserved,
+               sandboxed=run.sandboxed, carded=run.carded, admitted=run.admitted,
+               proposed=run.proposed, queries=run.queries, telemetry=run.telemetry,
+               # THE MANIFEST'S VERIFICATION-DEPTH FIELD (req-P1-A-DUMP-IS-ITS-OWN-COUNT):
+               # every file-shaped count this run established, labelled in the manifest itself.
+               verification=dict(
+                   counts={k: sum(1 for c in run.found if c.get("verified") == k)
+                           for k in ("file",)},
+                   file=[dict(id=c["id"], verified="file", records=c.get("records"),
+                              sha256=c.get("sha256"), stated=c.get("stated"),
+                              count_command=c.get("count_command"))
+                         for c in run.found if c.get("verified") == "file"],
+                   detail="a file count is verified: file (our count OF the bytes we hashed, "
+                          "reproducible with the published command) — never re-derived from the "
+                          "authority, which this path did not ask"))
+    p = os.path.join(run.state_dir, "runs")
+    _ensure_dir(p)
+    path = os.path.join(p, f"{run.run_id}.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(rec, fh, indent=1)
+    with open(os.path.join(run.state_dir, "last.json"), "w", encoding="utf-8") as fh:
+        json.dump(rec, fh, indent=1)
+    return path
+
+
+# ═══════════════════════════════════════════════════════════ 6 · THE RUN ITSELF
+def run_cycle(cfg: dict, mode: str | None = None) -> int:
+    """One bounded run. The preflight refusals all happen BEFORE a request leaves the box."""
+    mode = mode or cfg["mode"]
+    try:
+        _need(mode in MODES, f"mode must be one of {list(MODES)}, got {mode!r}", "mode")
+    except CycleRefused as e:
+        print(f"REFUSED[{e.code}] {e.detail}", flush=True)
+        return EXIT_REFUSED
+    if not cfg["enabled"]:
+        # THE SHIPPED DEFAULT: nothing at all. No request, no report, no state, no store touch.
+        print(f"CYCLE     disabled — `{_rel(cfg['_path'])}` says enabled: false; the cycle does "
+              f"nothing at all (no request, no report, nothing spent)", flush=True)
+        return EXIT_OK
+    permits, why = (True, "")
+    if cfg["admit"]["by_policy"]:
+        permits, why = read_ruling(_ruling_path(cfg))
+        if not permits:
+            print(f"REFUSED[governance] admit.by_policy: true is REFUSED — {why}", flush=True)
+            return EXIT_REFUSED
+    surfaces: list[dict] = []
+    if mode in ("discover", "both"):
+        try:
+            surfaces = load_registry(cfg)
+        except CycleRefused as e:
+            print(f"REFUSED[{e.code}] {e.detail}", flush=True)
+            return EXIT_REFUSED
+
+    run = Run(cfg, mode)
+    run.say(f"CYCLE     {run.run_id} mode={mode} config={_rel(cfg['_path'])} "
+            f"budget={json.dumps(cfg['budget'])}")
+    if run.last_run_note:
+        run.say(f"LAST RUN  {run.last_run_note}")
+    if cfg["admit"]["by_policy"]:
+        run.say(f"GOVERNANCE admit.by_policy=true — permitted on record: {why}")
+    elif mode != "watch":
+        run.say(f"GOVERNANCE admit.by_policy=false — the cycle PROPOSES; a person admits")
+    outcome = "completed"
+    try:
+        if mode in ("watch", "both"):
+            run.step_now = "telemetry"
+            step_telemetry(run)
+        if mode in ("discover", "both"):
+            run.step_now = "discovery"
+            step_discover(run, surfaces)
+        if run.looked["errors"] and run.looked["errors"] >= run.looked["queries"]:
+            codes = sorted({q["error"] for q in run.queries if q.get("error")})
+            run.stopped = "network-down" if codes == ["network-down"] else "surfaces-unreadable"
+            run.stop_detail = (f"every one of the {run.looked['queries']} listed quer"
+                               f"{'y' if run.looked['queries'] == 1 else 'ies'} died before it could "
+                               f"be read ({', '.join(codes)}; each refusal is named above and in the "
+                               f"report) — the cycle looked, and says so, but it saw nothing")
+    except CycleRefused as e:
+        run.stopped = e.code
+        run.stop_detail = e.detail
+        run.steps_done.append(f"{run.step_now or 'start'}(stopped: {e.code})")
+        run.refused.append(dict(code=e.code, detail=e.detail, at=_utc()))
+        run.say(f"REFUSED[{e.code}] {e.detail}")
+    outcome = run.stopped or "completed"
+    rp = write_report(run)
+    rec = write_record(run, outcome)
+    run.say(f"COST      requests={run.cost['requests']} bytes={run.cost['bytes_in']} "
+            f"wall={run.cost['wall_s']}s · budget left {json.dumps(run.budget_left)}")
+    run.say(f"REPORT    {_rel(rp)}  sha256={_sha_file(rp)[:16]}…")
+    run.say(f"RECORD    {_rel(rec)}")
+    return EXIT_OK if not run.stopped else EXIT_STOPPED
+
+
+# ═══════════════════════════════════════════════════════════ 7 · THE MACHINE DOOR READS THIS
+def status_text(config: str = DEFAULT_CYCLE) -> str:
+    """`cycle_status` — enabled? · mode · last run · last report · budget left · next due.
+    READ-ONLY: it reads cycle.yml and the last run record and writes nothing at all."""
+    try:
+        cfg = load_cycle(config)
+    except CycleRefused as e:
+        return (f"REFUSED[{e.code}] {e.detail}\nCYCLE  unreadable: {config} — status cannot be "
+                f"reported from a config the cycle itself refuses")
+    permits, why = read_ruling(_ruling_path(cfg))
+    state = _path(cfg, "state_dir")
+    rec: dict = {}
+    p = os.path.join(state, "last.json")
+    if os.path.isfile(p):
+        try:
+            rec = json.load(open(p, encoding="utf-8"))
+        except Exception:
+            rec = {}
+    b = cfg["budget"]
+    left = rec.get("budget_left") or dict(b)
+    due = "unknown"
+    if rec.get("started_at"):
+        try:
+            t = dt.datetime.fromisoformat(rec["started_at"])
+            days = {"daily": 1, "weekly": 7, "monthly": 30}.get(cfg["every"], 7)
+            due = (t + dt.timedelta(days=days)).replace(microsecond=0).isoformat()
+        except ValueError:
+            due = "unknown"
+    out = [
+        f"CYCLE     enabled={str(cfg['enabled']).lower()} · mode={cfg['mode']} · every={cfg['every']}"
+        + ("" if cfg["enabled"] else " · SHIPPED OFF: it does nothing at all"),
+        f"CONFIG    {_rel(cfg['_path'])}  sha256={cfg['_sha256'][:16]}…",
+        f"PROFILE   " + ((f"{cfg['_profile']['name']} · budget in force = "
+                          f"{cfg['_profile'].get('budget_source')}")
+                         if (cfg.get("_profile") or {}).get("name")
+                         else "none declared (surfaces.registry is the only surface set)"),
+        f"SURFACES  {_rel(_path(cfg, 'surfaces', 'registry'))} (kind {cfg['surfaces']['kind']})",
+        f"LAST RUN  " + (f"{rec.get('run_id')} mode={rec.get('mode')} outcome={rec.get('outcome')} "
+                         f"at {rec.get('started_at')}" if rec else "none on record"),
+        f"LAST REPORT " + (f"{rec.get('report')}  sha256={str(rec.get('report_sha256'))[:16]}…"
+                           if rec.get("report") else "none"),
+        f"BUDGET    requests {left.get('requests')}/{b['requests']} left · bytes "
+        f"{left.get('bytes')}/{b['bytes']} left · wall {left.get('wall_s')}/{b['wall_s']}s left",
+        f"NEXT DUE  {due}",
+        f"ADMIT     by_policy={str(cfg['admit']['by_policy']).lower()} — "
+        + (f"PERMITTED: {why}" if permits and cfg["admit"]["by_policy"] else why),
+        "DOOR      cycle_status is READ-ONLY and cycle_run_once is the only write; both live on "
+        "the MACHINE door only — never on the read doors (DESIGN-SENTINEL §5)",
+    ]
+    if rec.get("stopped"):
+        out.append(f"LAST STOPPED ON {rec['stopped']} after {', '.join(rec.get('steps_done') or [])} "
+                   f"— {rec.get('stop_detail', '')}")
+    return "\n".join(out)
+
+
+# ═══════════════════════════════════════════════════════════ 8 · THE SEVEN ACCEPTANCE CASES
+def selftest() -> int:
+    """DESIGN-SENTINEL §8, all seven, offline, each quoted with its exit code.
+
+    Nothing here touches the internet: every surface is a local HTTP server on 127.0.0.1, every
+    path lives under one temp directory, and each case runs the REAL `python3 -m symbiont.cycle` in
+    a subprocess so the exit code quoted is the cycle's own."""
+    import tempfile
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import yaml
+
+    GENES = ("symbol\tMGI id\tchrom\tstart\tend\n"
+             "Trp53\tMGI:98834\t11\t69580359\t69581786\n"
+             "Brca1\tMGI:104537\t11\t101471872\t101543608\n"
+             "Epcam\tMGI:106653\t17\t87652551\t87659529\n")
+    LICENCE = ("<html><body>CC0 1.0 Universal — public domain dedication. You may store and "
+               "redistribute this data.</body></html>")
+    # A9's two pages: one that GRANTS a licence in a licensing sentence, and one that talks about
+    # permissions and grants nothing (the gate must not turn 'we fetched a page' into a reading).
+    LICENCE_CCBY4 = ("<html><body><h3>Warranty Disclaimer</h3>"
+                     "<p>MGI data and annotations are licensed under a Creative Commons "
+                     "Attribution 4.0 International License (CC-BY).</p>"
+                     "<p>Images are the copyrighted work of the attributed author.</p>"
+                     "</body></html>")
+    LICENCE_NONE = ("<html><body><h3>Privacy Notice</h3><p>This site uses cookies. Some are "
+                    "required for basic operation and you cannot opt out.</p>"
+                    "<p>Usage is logged to generate summary statistics.</p></body></html>")
+    SEARCH = dict(total_count=0, items=[])
+
+    # ── A10's FIXTURE DUMPS (req-P1-A-DUMP-IS-ITS-OWN-COUNT): a real zip, its truncated copy,
+    #    and a zip whose publisher STATES a number that disagrees with the records we parse.
+    def dump_zip(member: str, data: bytes, notes: str = "") -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(member, data)
+            if notes:
+                zf.writestr("release.html", notes)
+        return buf.getvalue()
+
+    GENE_CSV = b"symbol,entrez\na,1\nb,2\nc,3\n"            # header + 3 records
+    NOTES_3 = "<html><body><p>Number of genes: 3</p></body></html>"
+    NOTES_99 = "<html><body><p>Number of genes: 99</p></body></html>"
+    DUMPS = {"good": dump_zip("genes.csv", GENE_CSV, NOTES_3),
+             "wrong": dump_zip("genes.csv", GENE_CSV, NOTES_99),
+             "empty": dump_zip("genes.csv", b"symbol,entrez\n", NOTES_3)}
+    DUMPS["short"] = DUMPS["good"][:40]                    # a truncated COPY of the same zip
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _s(self, body: str, ct: str, code: int = 200):
+            b = body.encode()
+            self.send_response(code)
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(b)
+
+        def do_HEAD(self):
+            self._s(GENES, "text/tab-separated-values")
+
+        def _b(self, body: bytes, ct: str, code: int = 200):
+            """A BYTE body with its own Content-Length — a truncated copy served as if whole, so
+            the short read is a fact about the FILE and not about the transport."""
+            self.send_response(code)
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path.startswith("/dump/"):
+                name = self.path.rsplit("/", 1)[-1]
+                self._b(DUMPS.get(name, b""), "application/zip",
+                        200 if name in DUMPS else 404)
+            elif self.path.startswith("/genes"):
+                self._s(GENES, "text/tab-separated-values")
+            elif self.path.startswith("/licence-ccby4"):       # A9: a page that DOES name a licence
+                self._s(LICENCE_CCBY4, "text/html")
+            elif self.path.startswith("/licence-nolicence"):    # A9: a page that grants nothing
+                self._s(LICENCE_NONE, "text/html")
+            elif self.path.startswith("/licence"):
+                self._s(LICENCE, "text/html")
+            elif self.path.startswith("/count-bad"):
+                self._s("4", "text/plain")
+            elif self.path.startswith("/count"):
+                self._s("3", "text/plain")
+            elif self.path.startswith("/search"):
+                self._s(json.dumps(SEARCH), "application/json")
+            elif self.path.startswith("/nothing"):
+                self._s("gone", "text/plain", 404)
+            else:
+                self._s("not found", "text/plain", 404)
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    results: list[tuple[str, bool]] = []
+
+    def check(name: str, good: bool, detail: str = "") -> None:
+        results.append((name, good))
+        print(f"  {'PASS' if good else 'FAIL'} {name}" + (f"  {detail}" if detail else ""),
+              flush=True)
+
+    def tree(tmp: str, *, surf_yaml: str = "", queries: list[str] | None = None,
+             budget=(8, 4000000, 120), provider: str = "", by_policy: bool = False,
+             ruling: str = "", enabled: bool = True, digest: bool = True, n: int = 1,
+             cycles: int = 1, mode: str = "discover") -> dict:
+        """One fixture deployment: config + registry + store + policy + sources, all under tmp."""
+        os.makedirs(os.path.join(tmp, "store", "digest"), exist_ok=True)
+        if digest:
+            with open(os.path.join(tmp, "store", "digest", "gaps.md"), "w") as fh:
+                fh.write("# GAPS\n\n- gaps measured: 0\n")
+        os.makedirs(os.path.join(tmp, "store", "runs"), exist_ok=True)
+        for i in range(cycles):
+            with open(os.path.join(tmp, "store", "runs", f"c{i}.json"), "w") as fh:
+                json.dump(dict(run_id=f"c{i}", started_at=f"2026-11-0{i + 1}T00:00:00+00:00",
+                               sources={"fix_genes": dict(verify=dict(ok=True), skipped=False)}),
+                          fh)
+        dummy = yaml.safe_load(open(os.path.join(FARM, "symbiont", "sources.yml")))
+        one = dict(dummy["sources"][0])
+        one["enabled"] = False
+        with open(os.path.join(tmp, "sources.yml"), "w") as fh:
+            fh.write("# the fixture deployment's registry\n")
+            fh.write(yaml.safe_dump(dict(version=1, sources=[one]), sort_keys=False))
+        pol = open(os.path.join(FARM, "reports", "symbiont-policy.yml")).read()
+        pol = re.sub(r"^(\s*stable_cycles_before_self_admit:)\s*null.*$", rf"\g<1> {n}", pol, flags=re.M)
+        with open(os.path.join(tmp, "policy.yml"), "w") as fh:
+            fh.write(pol)
+        if surf_yaml:
+            reg = os.path.join(tmp, "surfaces.yml")
+            open(reg, "w").write(surf_yaml)
+        else:
+            reg = os.path.join(tmp, "queries.txt")
+            open(reg, "w").write("# the fixture registry\n" + "\n".join(queries or []) + "\n")
+        cfg = dict(version=1, enabled=enabled, mode=mode, every="weekly",
+                   budget=dict(requests=budget[0], bytes=budget[1], wall_s=budget[2]),
+                   rate_limit=dict(requests_per_minute=120, min_interval_s=0.0),
+                   store=os.path.join(tmp, "store"),
+                   report_dir=os.path.join(tmp, "reports"),
+                   state_dir=os.path.join(tmp, "store", "cycle"),
+                   admission=dict(dir=os.path.join(tmp, "adm"),
+                                  sources_config=os.path.join(tmp, "sources.yml"),
+                                  drafts_dir=os.path.join(tmp, "drafts"),
+                                  adapters_dir=os.path.join(tmp, "adapters"),
+                                  gate_file=os.path.join(FARM, "symbiont", "admission-gate.txt"),
+                                  policy=os.path.join(tmp, "policy.yml")),
+                   surfaces=dict(registry=reg, kind="github_search",
+                                 endpoint=f"{base}/search", per_page=5, dead_days=730,
+                                 seed_topics=3),
+                   draft=dict(provider=provider),
+                   admit=dict(by_policy=by_policy, ruling=ruling))
+        p = os.path.join(tmp, "cycle.yml")
+        open(p, "w").write(yaml.safe_dump(cfg, sort_keys=False))
+        return cfg
+
+    def cycle(tmp: str, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, "-m", "symbiont.cycle",
+                               "--config", os.path.join(tmp, "cycle.yml"), *args],
+                              cwd=FARM, capture_output=True, text=True, timeout=900)
+
+    def listed(tmp: str, **over) -> str:
+        """A structured registry naming ONE candidate with its own count endpoint."""
+        cand = dict(id="fix_genes", url=f"{base}/genes.tsv", licence_url=f"{base}/licence.html",
+                    count_endpoint=over.pop("count_endpoint", f"{base}/count"),
+                    licence="CC0-1.0", question="does the fixture answer a question")
+        return yaml.safe_dump(dict(version=1, surfaces=[
+            dict(id="fixture-data", kind="listed", candidates=[cand])]), sort_keys=False)
+
+    PROV = os.path.join(tempfile.mkdtemp(prefix="cyc-prov-"), "provider.sh")
+    with open(PROV, "w") as fh:                     # a provider that DRAFTS the tested template
+        fh.write("#!/bin/bash\n"
+                 "# the deployment's OWN drafting provider: argv = <candidate.json> <draft.py>\n"
+                 "set -e\n"
+                 "ADM=\"$(dirname \"$(dirname \"$1\")\")\"\n"
+                 "ID=\"$(basename \"$2\" .py)\"\n"
+                 f"cd {FARM}\n"
+                 "python3 -m symbiont.admission draft \"$ID\" --admission-dir \"$ADM\" "
+                 "--drafts-dir \"$(dirname \"$2\")\" >/dev/null\n"
+                 "test -f \"$2\"\n")
+    os.chmod(PROV, 0o755)
+    print(f"== selftest_cycle: the seven acceptance cases of DESIGN-SENTINEL §8 (offline, "
+          f"surface at {base}) ==", flush=True)
+    tmpdir = tempfile.mkdtemp(prefix="symbiont-cycle-test-")
+    try:
+        # ══ A1 · A QUIET WEEK ══════════════════════════════════════════════════════════════════
+        print("\nA1 a quiet week — it looks, it prints 'I looked … 0 new', it exits 0", flush=True)
+        tmp = os.path.join(tmpdir, "a1")
+        tree(tmp, queries=["topic:mcp-server biomedical", "BioASQ"], mode="both")
+        SEARCH.update(total_count=0, items=[])
+        p = cycle(tmp)
+        check("A1 quiet week exits 0", p.returncode == 0, f"exit={p.returncode}")
+        check("A1 'I looked: 1 surface · 2 queries · 0 new' is printed",
+              "I looked: 1 surface(s) · 2 queries · 0 new" in p.stdout,
+              next((l for l in p.stdout.splitlines() if l.startswith("I looked")), "(no line)"))
+        check("A1 the report exists and quotes the same line",
+              any("I looked: 1 surface(s) · 2 queries · 0 new" in open(f, encoding="utf-8").read()
+                  for f in glob.glob(os.path.join(tmp, "reports", "*.md"))))
+
+        # ══ A2 · ONE REFUSED CANDIDATE ═════════════════════════════════════════════════════════
+        print("\nA2 one new candidate — found, refused by its OWN rule, the rule in the report",
+              flush=True)
+        tmp = os.path.join(tmpdir, "a2")
+        tree(tmp, queries=["topic:biomedical-nlp"])
+        SEARCH.update(total_count=2, items=[
+            dict(full_name="someone/unlicensed", html_url=f"{base}/x", license=None,
+                 archived=False, pushed_at="2026-11-01T00:00:00Z"),
+            dict(full_name="someone/archived", html_url=f"{base}/y",
+                 license=dict(spdx_id="MIT"), archived=True, pushed_at="2026-11-01T00:00:00Z")])
+        p = cycle(tmp)
+        check("A2 exits 0 (a refused candidate is the cycle working)", p.returncode == 0,
+              f"exit={p.returncode}")
+        check("A2 REFUSED[licence-unreadable] is named", "REFUSED[licence-unreadable]" in p.stdout)
+        check("A2 REFUSED[archived] is named", "REFUSED[archived]" in p.stdout)
+        rep = "\n".join(open(f, encoding="utf-8").read()
+                        for f in glob.glob(os.path.join(tmp, "reports", "*.md")))
+        check("A2 both refusals are IN the report with the rule named",
+              "REFUSED[licence-unreadable]" in rep and "REFUSED[archived]" in rep)
+
+        # ══ A3 · COUNT-MISMATCH DRAFT REFUSED ═════════════════════════════════════════════════
+        print("\nA3 one draft — the sandbox count disagrees: REFUSED[count-mismatch], nothing "
+              "carded, nothing admitted", flush=True)
+        tmp = os.path.join(tmpdir, "a3")
+        tree(tmp, surf_yaml=listed(tmp, count_endpoint=f"{base}/count-bad"), provider=PROV)
+        p = cycle(tmp)
+        check("A3 REFUSED[count-mismatch] is named", "REFUSED[count-mismatch]" in p.stdout,
+              next((l for l in p.stdout.splitlines() if "count-mismatch" in l), "(none)"))
+        check("A3 nothing was carded", not glob.glob(os.path.join(tmp, "adm", "*", "card.md")))
+        check("A3 nothing was admitted (no admitted.json)",
+              not glob.glob(os.path.join(tmp, "adm", "*", "admitted.json")))
+
+        # ══ A4 · by_policy FALSE ⇒ PROPOSED, NOT ADMITTED ═════════════════════════════════════
+        print("\nA4 admit.by_policy false — a fully green card is PROPOSED and sources.yml gains "
+              "no enabled:true", flush=True)
+        tmp = os.path.join(tmpdir, "a4")
+        tree(tmp, surf_yaml=listed(tmp), provider=PROV, by_policy=False)
+        p = cycle(tmp)
+        check("A4 exits 0", p.returncode == 0, f"exit={p.returncode}")
+        check("A4 the card is green (5/5 checks ok)",
+              bool(glob.glob(os.path.join(tmp, "adm", "fix_genes", "card.md")))
+              and "check cost: ok" in open(os.path.join(tmp, "adm", "fix_genes", "card.md")).read(),
+              "card.md written")
+        check("A4 PROPOSED is said and ADMITTED is not",
+              "PROPOSED  fix_genes" in p.stdout and "ADMITTED" not in p.stdout)
+        up = yaml.safe_load(open(os.path.join(tmp, "sources.yml")))
+        enabled = [s["id"] for s in up["sources"] if s["enabled"]]
+        check("A4 sources.yml holds no enabled:true for the candidate", "fix_genes" not in enabled,
+              f"enabled={enabled}")
+
+        # ══ A5 · N UNMET vs N MET ═════════════════════════════════════════════════════════════
+        print("\nA5 admit.by_policy true — N unmet is refused naming N; N met is admitted and the "
+              "record quotes rule + N", flush=True)
+        RULING = os.path.join(tmpdir, "ruling-A.md")
+        open(RULING, "w").write("# COUNCIL RULING — fixture\nQuestion: may the shipped station "
+                                "admit by policy?\nRULING: A\n"
+                                "## DECISION: A — admit-by-policy permitted, off by default\n"
+                                "## STATUS: RATIFIED (fixture)\n")
+        tmp = os.path.join(tmpdir, "a5-unmet")
+        tree(tmp, surf_yaml=listed(tmp), provider=PROV, by_policy=True, ruling=RULING, n=3,
+             cycles=1)
+        p = cycle(tmp)
+        check("A5 (N unmet) REFUSED[cycles] names N=3",
+              "REFUSED[cycles]" in p.stdout and "N=3" in p.stdout,
+              next((l for l in p.stdout.splitlines() if "stable_cycles" in l or "cycles" in l), ""))
+        check("A5 (N unmet) nothing admitted",
+              not glob.glob(os.path.join(tmp, "adm", "*", "admitted.json")))
+        tmp = os.path.join(tmpdir, "a5-met")
+        tree(tmp, surf_yaml=listed(tmp), provider=PROV, by_policy=True, ruling=RULING, n=1,
+             cycles=1)
+        p = cycle(tmp)
+        adm = glob.glob(os.path.join(tmp, "adm", "*", "admitted.json"))
+        line = ""
+        if adm:
+            line = ((json.load(open(adm[0])).get("policy") or {}).get("line") or "")
+        check("A5 (N met) ADMITTED and the record quotes the rule and N",
+              "ADMITTED  fix_genes" in p.stdout
+              and "rule stable_cycles_before_self_admit, N=1" in line, f"record line={line!r}")
+
+        # ══ A6 · BUDGET EXHAUSTED MID-CYCLE ═══════════════════════════════════════════════════
+        print("\nA6 the budget is spent mid-cycle — the cycle STOPS, records why, exits 3, and the "
+              "next cycle says how much it did", flush=True)
+        tmp = os.path.join(tmpdir, "a6")
+        tree(tmp, queries=["q-one", "q-two", "q-three"], budget=(1, 4000000, 120))
+        SEARCH.update(total_count=0, items=[])
+        p = cycle(tmp)
+        check("A6 exits 3 (stopped, not a crash)", p.returncode == 3, f"exit={p.returncode}")
+        check("A6 REFUSED[budget] is named", "REFUSED[budget]" in p.stdout)
+        p2 = cycle(tmp)
+        check("A6 the NEXT run says how much the last one did",
+              "LAST RUN" in p2.stdout and "outcome=budget" in p2.stdout
+              and "discovery(stopped: budget)" in p2.stdout,
+              next((l for l in p2.stdout.splitlines() if "LAST RUN" in l), ""))
+        check("A6 the report of the next run quotes it too",
+              any("outcome=budget" in open(f, encoding="utf-8").read()
+                  for f in sorted(glob.glob(os.path.join(tmp, "reports", "*.md")))[-1:]))
+
+        # ══ A7 · THE NETWORK IS DOWN ══════════════════════════════════════════════════════════
+        print("\nA7 the network is down — named refusals, no hang, 'I looked' still printed, exit 3",
+              flush=True)
+        tmp = os.path.join(tmpdir, "a7")
+        tree(tmp, queries=["topic:x", "topic:y"])
+        cfgp = os.path.join(tmp, "cycle.yml")
+        txt = open(cfgp).read().replace(f"{base}/search", "http://127.0.0.1:9/search")
+        open(cfgp, "w").write(txt)
+        p = cycle(tmp)
+        check("A7 exits 3", p.returncode == 3, f"exit={p.returncode}")
+        check("A7 REFUSED[network-down] is named for the queries",
+              p.stdout.count("REFUSED[network-down]") >= 2)
+        check("A7 'I looked' is still printed", "I looked: 1 surface(s) · 2" in p.stdout,
+              next((l for l in p.stdout.splitlines() if l.startswith("I looked")), "(none)"))
+        check("A7 nothing hung and a report was written",
+              bool(glob.glob(os.path.join(tmp, "reports", "*.md"))))
+
+        # ══ A8 · RE-OBSERVATION IS NOT A STATE CHANGE ═════════════════════════════════════════
+        # req-P1-THE-DIARY-REFUSES-RE-OBSERVATION: two queries returning the SAME candidates in
+        # one run used to emit 'discovered' twice each, and the diary — rightly — answered
+        # REFUSED[illegal-transition]. The count now lives in ONE event (`occurrences`), a second
+        # run over an all-seen registry writes NOTHING and says '0 new · N seen', and the diary's
+        # table is untouched: a genuine discovered->discovered attempt is still refused.
+        print("\nA8 the same candidates from two queries in ONE run — ONE 'discovered' event each "
+              "carrying occurrences: 2; a second run over an all-seen registry — '0 new · N seen' "
+              "and ZERO REFUSED[illegal-transition]; the table still refuses a real duplicate",
+              flush=True)
+        tmp = os.path.join(tmpdir, "a8")
+        tree(tmp, queries=["repeat-one", "repeat-two"])
+        SEARCH.update(total_count=2, items=[
+            dict(full_name="repeat/in-both", html_url=f"{base}/r1", license=dict(spdx_id="MIT"),
+                 archived=False, pushed_at="2026-11-01T00:00:00Z"),
+            dict(full_name="repeat/in-both-too", html_url=f"{base}/r2",
+                 license=dict(spdx_id="MIT"), archived=False,
+                 pushed_at="2026-11-01T00:00:00Z")])
+        store8 = os.path.join(tmp, "store")
+        diary8 = events.diary_path(store8)      # the name is spelled in diary.py and NOWHERE else
+
+        def lines_of(cls: str) -> list[dict]:
+            if not os.path.isfile(diary8):
+                return []
+            return [json.loads(l) for l in open(diary8, encoding="utf-8")
+                    if l.strip() and json.loads(l).get("class") == cls]
+
+        p = cycle(tmp)
+        disc = lines_of("discovered")
+        check("A8 two queries, two candidates: exactly 2 'discovered' lines (not 4)",
+              len(disc) == 2, f"{len(disc)} discovered line(s)")
+        check("A8 each 'discovered' line carries occurrences: 2 (seen twice in one run)",
+              all((d.get("evidence") or {}).get("occurrences") == 2 for d in disc),
+              f"occurrences={[(d.get('evidence') or {}).get('occurrences') for d in disc]}")
+        check("A8 the first run meets ZERO REFUSED[illegal-transition]",
+              "illegal-transition" not in p.stdout,
+              next((l for l in p.stdout.splitlines() if "illegal-transition" in l), "(none)"))
+        head8 = events.head_of(store8)["head_sha256"]
+        refusals8 = len(lines_of("refused"))
+        check("A8 each candidate is REFUSED once, carrying occurrences: 2",
+              refusals8 == 2 and all((d.get("evidence") or {}).get("occurrences") == 2
+                                     for d in lines_of("refused")),
+              f"{refusals8} refused line(s)")
+        p2 = cycle(tmp)
+        check("A8 the second run says '0 new · 4 seen' (2 candidates x 2 queries)",
+              "I looked: 1 surface(s) · 2 queries · 0 new · 4 seen" in p2.stdout,
+              next((l for l in p2.stdout.splitlines() if l.startswith("I looked")), "(none)"))
+        check("A8 the second run writes NO diary line and meets ZERO illegal transitions",
+              events.head_of(store8)["head_sha256"] == head8
+              and "illegal-transition" not in p2.stdout,
+              f"head {'unchanged' if events.head_of(store8)['head_sha256'] == head8 else 'MOVED'}")
+        check("A8 the report names the re-observations instead of pretending to transitions",
+              "seen again" in open(sorted(glob.glob(os.path.join(tmp, "reports", "*.md")))[-1],
+                                   encoding="utf-8").read())
+        still_refused = False
+        try:
+            events.append(store8, "discovered", source_id="repeat_in_both",
+                          why="A8: a GENUINE second 'discovered' for the same candidate — the "
+                              "closed table must still refuse it")
+        except events.IllegalTransition:
+            still_refused = True
+        check("A8 the diary's TABLE is unchanged and still refuses discovered->discovered",
+              still_refused, "the table refused the planted duplicate" if still_refused
+              else "THE TABLE ACCEPTED A DUPLICATE — it was loosened")
+
+        # ══ A9 · A LISTED CANDIDATE READS ITS DECLARED LICENCE ═════════════════════════════════
+        # req-P1-A-LISTED-CANDIDATE-MUST-READ-ITS-D. Measured 2026-11-13 against the aging-gene-list
+        # registry: a `kind: listed` surface names KNOWN addresses, so no code host publishes an
+        # spdx_id for them and `cand['licence']` was empty for all three — GenAge's two zips AND
+        # MGI's own file, the one whose terms page was declared. 3/3 REFUSED[licence-unreadable],
+        # which is a blanket over the one surface kind that exists for data portals. The gate now
+        # reads, in order: the surface's API · the declared `licence_url` (fetched ONCE, hashed) ·
+        # the OPERATOR's declared `licence:` text · and only then refuses, naming BOTH attempts.
+        print("\nA9 a listed candidate reads its declared licence — fetched · declared · absent, "
+              "each NAMED in the run record", flush=True)
+        tmp = os.path.join(tmpdir, "a9")
+        declared_text = "CC BY 3.0 Unported — read by the operator on the portal's terms page"
+        cands9 = [
+            dict(id="gate_fetched", url=f"{base}/genes.tsv",
+                 licence_url=f"{base}/licence-ccby4", count_endpoint=f"{base}/count"),
+            dict(id="gate_declared", url=f"{base}/genes.tsv", licence=declared_text,
+                 count_endpoint=f"{base}/count"),
+            dict(id="gate_unparsed", url=f"{base}/genes.tsv",
+                 licence_url=f"{base}/licence-nolicence",
+                 licence="CC0 1.0 — declared after reading the portal's downloads page",
+                 count_endpoint=f"{base}/count"),
+            dict(id="gate_absent", url=f"{base}/genes.tsv", count_endpoint=f"{base}/count"),
+            dict(id="gate_404", url=f"{base}/genes.tsv", licence_url=f"{base}/nothing",
+                 count_endpoint=f"{base}/count"),
+        ]
+        tree(tmp, surf_yaml=yaml.safe_dump(dict(version=1, surfaces=[
+            dict(id="fixture-listed", kind="listed", candidates=cands9)]), sort_keys=False),
+             budget=(16, 4000000, 120))
+        p = cycle(tmp)
+        rep9 = "\n".join(open(f, encoding="utf-8").read()
+                         for f in glob.glob(os.path.join(tmp, "reports", "*.md")))
+        rec9 = json.load(open(os.path.join(tmp, "store", "cycle", "last.json"), encoding="utf-8"))
+        gate9 = {g["id"]: g for g in rec9.get("licence_gate") or []}
+        page9 = LICENCE_CCBY4.encode()
+        check("A9 the declared licence page is FETCHED and its licence recognised",
+              gate9.get("gate_fetched", {}).get("how") == "fetched"
+              and gate9["gate_fetched"].get("licence") == "CC-BY-4.0",
+              json.dumps({k: (v.get("how"), v.get("licence")) for k, v in gate9.items()}))
+        check("A9 the fetch is recorded with its URL and the sha256 of the bytes read",
+              gate9.get("gate_fetched", {}).get("url") == f"{base}/licence-ccby4"
+              and gate9["gate_fetched"].get("sha256") == hashlib.sha256(page9).hexdigest(),
+              f"sha256={str(gate9.get('gate_fetched', {}).get('sha256'))[:16]}…")
+        check("A9 the page's OWN sentence is quoted (the machine's reading is checkable)",
+              "licensed under a Creative Commons Attribution 4.0"
+              in gate9.get("gate_fetched", {}).get("quote", ""),
+              repr(gate9.get("gate_fetched", {}).get("quote", "")[:100]))
+        check("A9 an operator-declared licence text satisfies the gate, actor=operator + sha256",
+              gate9.get("gate_declared", {}).get("how") == "declared"
+              and gate9["gate_declared"].get("actor") == "operator"
+              and gate9["gate_declared"].get("sha256")
+              == hashlib.sha256(declared_text.encode()).hexdigest(),
+              f"actor={gate9.get('gate_declared', {}).get('actor')}")
+        check("A9 a declared text is recorded VERBATIM (not normalised)",
+              gate9.get("gate_declared", {}).get("licence") == declared_text)
+        check("A9 the diary's 'evaluated' line for it says actor=operator",
+              any(e.get("actor") == "operator" and e.get("class") == "evaluated"
+                  for e in events.read(os.path.join(tmp, "store")).events),
+              str([(e.get("source_id"), e.get("class"), e.get("actor"))
+                   for e in events.read(os.path.join(tmp, "store")).events]))
+        check("A9 a page that names no licence is NOT a reading — the declared text answers",
+              gate9.get("gate_unparsed", {}).get("how") == "declared"
+              and gate9["gate_unparsed"].get("sha256")
+              == hashlib.sha256("CC0 1.0 — declared after reading the portal's downloads page"
+                                .encode()).hexdigest())
+        absent9 = re.search(r"REFUSED\[licence-unreadable\] gate_absent: (.+)", p.stdout)
+        check("A9 nothing declared -> REFUSED[licence-unreadable] naming BOTH attempts",
+              absent9 is not None
+              and "attempt 1 (declared licence_url): no licence_url on the candidate"
+              in absent9.group(1)
+              and "attempt 2 (operator-declared licence:): no licence text on the candidate"
+              in absent9.group(1),
+              absent9.group(1)[:220] if absent9 else "(no refusal line)")
+        dead9 = re.search(r"REFUSED\[licence-unreadable\] gate_404: (.+)", p.stdout)
+        check("A9 an unreachable licence page is named WITH ITS URL (not a blanket refusal)",
+              dead9 is not None and f"{base}/nothing" in dead9.group(1)
+              and "attempt 2 (operator-declared licence:)" in dead9.group(1),
+              dead9.group(1)[:220] if dead9 else "(no refusal line)")
+        check("A9 the gate that answered lets the candidate through (PROPOSED, not refused)",
+              "PROPOSED  gate_fetched" in p.stdout
+              and "PROPOSED  gate_declared" in p.stdout
+              and "PROPOSED  gate_unparsed" in p.stdout)
+        check("A9 the report counts fetched · declared · absent and shows url + sha256 + quote",
+              "## licence gate" in rep9 and "fetched 1 · declared 2 · absent 2" in rep9
+              and f"page `{base}/licence-ccby4` sha256=" in rep9
+              and "licensed under a Creative Commons Attribution 4.0" in rep9,
+              next((l for l in rep9.splitlines() if l.startswith("## licence gate")), "(none)"))
+
+        # ══ A10 · A DUMP IS ITS OWN COUNT (req-P1-A-DUMP-IS-ITS-OWN-COUNT) ═════════════════════
+        # A zip has no server to ask, so `count_kind: file` says the count IS the records parsed
+        # from the bytes we hashed. The three ways a file lies to itself are each refused BY NAME,
+        # and the label stays `verified: file` — never the depth only an authority can give.
+        print("\nA10 a zip with count_kind: file — PROPOSED at verified: file with its count and "
+              "sha256; a truncated copy and an unparseable one are REFUSED[file-truncated] naming "
+              "both lengths; a stated number that disagrees is REFUSED[count-mismatch] naming both "
+              "numbers; zero rows is REFUSED[no-rows]; the endpoint rule is unchanged", flush=True)
+        tmp = os.path.join(tmpdir, "a10")
+        good_sha = hashlib.sha256(DUMPS["good"]).hexdigest()
+
+        def dump_cand(cid: str, name: str, **extra) -> dict:
+            c = dict(id=cid, url=f"{base}/dump/{name}", licence_url=f"{base}/licence.html",
+                     count_kind="file", data_member="genes.csv",
+                     stated_count_phrase="Number of genes", question="does the fixture answer")
+            c.update(extra)
+            return c
+
+        surf10 = yaml.safe_dump(dict(version=1, surfaces=[dict(
+            id="fixture-dumps", kind="listed", candidates=[
+                dump_cand("dump_good", "good"),
+                dump_cand("dump_short", "short", declared_bytes=len(DUMPS["good"])),
+                dump_cand("dump_raw_short", "short"),
+                dump_cand("dump_wrong", "wrong"),
+                dump_cand("dump_empty", "empty"),
+                # THE OLD RULE, UNCHANGED: a candidate that declares no kind and no count endpoint
+                dict(id="plain_no_kind", url=f"{base}/genes.tsv",
+                     licence_url=f"{base}/licence.html", question="q"),
+            ])]), sort_keys=False)
+        tree(tmp, surf_yaml=surf10, budget=(20, 4000000, 120))
+        p = cycle(tmp)
+        rep10 = "".join(open(f, encoding="utf-8").read()
+                        for f in sorted(glob.glob(os.path.join(tmp, "reports", "*.md"))))
+        recs10 = "".join(open(f, encoding="utf-8").read()
+                         for f in sorted(glob.glob(os.path.join(tmp, "store", "cycle", "runs",
+                                                              "*.json"))))
+        line10 = next((l for l in p.stdout.splitlines() if l.startswith("VERIFIED  dump_good")),
+                      "")
+        check("A10 a zip with count_kind: file is PROPOSED, labelled verified: file",
+              p.returncode == 0 and "PROPOSED  dump_good" in p.stdout
+              and "verified: file" in line10 and "3 record(s)" in line10 and good_sha in line10,
+              line10[:200] or "(no VERIFIED line)")
+        check("A10 the report + the run's manifest carry verified: file, the count, the sha256 and "
+              "the re-derivation command",
+              "## dumps verified from their own bytes — 1" in rep10
+              and f"sha256={good_sha}" in rep10
+              and "python3 -m symbiont.cycle recount --url" in rep10
+              and '"verified": "file"' in recs10 and '"records": 3' in recs10,
+              next((l for l in rep10.splitlines() if "dump_good" in l), "(none)")[:200])
+        shortline = next((l for l in p.stdout.splitlines()
+                          if "REFUSED[file-truncated]" in l and "dump_short" in l), "")
+        check("A10 a truncated copy is REFUSED[file-truncated] naming BOTH lengths",
+              f"{len(DUMPS['short'])} byte(s)" in shortline
+              and f"{len(DUMPS['good'])} byte(s)" in shortline, shortline[:200] or "(no line)")
+        rawline = next((l for l in p.stdout.splitlines()
+                        if "REFUSED[file-truncated]" in l and "dump_raw_short" in l), "")
+        check("A10 an unreadable archive with no declaration is REFUSED[file-truncated] too",
+              "not a readable archive" in rawline, rawline[:160] or "(no line)")
+        wline = next((l for l in p.stdout.splitlines()
+                      if "REFUSED[count-mismatch]" in l and "dump_wrong" in l), "")
+        check("A10 the publisher's stated number that disagrees is REFUSED[count-mismatch] naming "
+              "BOTH numbers", "we parsed 3 record(s)" in wline and "states 99" in wline,
+              wline[:200] or "(no line)")
+        check("A10 zero parsed records is REFUSED[no-rows]",
+              "REFUSED[no-rows]" in p.stdout and "dump_empty" in p.stdout)
+        check("A10 the endpoint rule is UNCHANGED: no count_kind, no count_endpoint -> "
+              "REFUSED[no-count-endpoint]",
+              any("REFUSED[no-count-endpoint]" in l and "plain_no_kind" in l
+                  for l in p.stdout.splitlines()))
+        up_rec = recs10.count("verified: upstream")
+        up_rep = rep10.count("verified: upstream")
+        file_rows = recs10.count('"verified": "file"')
+        check("A10 no row or manifest from this path claims upstream verification",
+              up_rec == 0 and up_rep == 0 and file_rows >= 1,
+              f"record hits={up_rec}, report hits={up_rep}, file rows={file_rows}")
+
+        # ══ A11 · `reconsidered` REOPENS A CANDIDATE ══════════════════════════════════════════
+        # req-P1-RECONSIDERED-MUST-REOPEN-A-CANDIDATE: a refusal used to be PERMANENT. The ONE
+        # transition the diary's table allows for a second look (`refused -> reconsidered ->
+        # evaluated`, diary.TRANSITIONS) was written by the operator and the cycle still answered
+        # 'seen again', because ANY prior state counted as 'not new'. So the fix that answers a
+        # refusal could never be TESTED through the station, and the only route back was editing
+        # the diary by hand — which is exactly what the log forbids. Measured here: refused ->
+        # reconsidered -> EVALUATED, `admitted` still skipped BY NAME, no prior state untouched.
+        print("\nA11 `reconsidered` REOPENS a refused candidate (refused -> reconsidered -> "
+              "evaluated); `admitted` is still SKIPPED, naming 'admitted'; a candidate with no "
+              "prior state is unaffected", flush=True)
+
+        def surf11(**over) -> str:
+            cand = dict(id="reopen_genes", url=f"{base}/genes.tsv",
+                        count_endpoint=f"{base}/count", **over)
+            return yaml.safe_dump(dict(version=1, surfaces=[
+                dict(id="reopen-data", kind="listed", candidates=[cand])]), sort_keys=False)
+
+        def registry11(*args: str) -> subprocess.CompletedProcess:
+            """The HUMAN door, run as the operator runs it (`python3 -m symbiont.registry`)."""
+            return subprocess.run([sys.executable, "-m", "symbiont.registry", *args], cwd=FARM,
+                                  capture_output=True, text=True, timeout=300)
+
+        def classes11(store: str) -> list[str]:
+            return [json.loads(l)["class"]
+                    for l in open(events.diary_path(store), encoding="utf-8")
+                    if l.strip() and json.loads(l).get("source_id") == "reopen_genes"]
+
+        def section11(tmp: str, head: str) -> str:
+            """One `## section` of the NEWEST report — the reader's view, quoted not summarised."""
+            latest = sorted(glob.glob(os.path.join(tmp, "reports", "*.md")),
+                            key=os.path.getmtime)[-1]
+            out, keep = [], False
+            for line in open(latest, encoding="utf-8"):
+                if line.startswith("## "):
+                    keep = line.startswith(head)
+                if keep:
+                    out.append(line.rstrip("\n"))
+            return "\n".join(out)
+
+        tmp = os.path.join(tmpdir, "a11")
+        tree(tmp, surf_yaml=surf11(), provider=PROV)     # NO terms on record: run 1 must refuse
+        store11 = os.path.join(tmp, "store")
+        cycle(tmp)
+        check("A11 run 1 refuses it: the diary reads discovered -> refused",
+              classes11(store11) == ["discovered", "refused"], f"classes={classes11(store11)}")
+        re11 = registry11("add-event", "--store", store11, "--class", "reconsidered",
+                          "--source", "reopen_genes", "--why",
+                          "the surface now DECLARES its licence — the fix that answers the refusal")
+        check("A11 the human door PRINTS what `reconsidered` enables (DELIVER 3)",
+              re11.returncode == 0 and "ENABLES" in re11.stdout and "EVALUATES" in re11.stdout
+              and "'refused' -> 'reconsidered'" in re11.stdout,
+              (next((l.strip() for l in re11.stdout.splitlines() if "REOPENED:" in l),
+                    "(no ENABLES line)"))[:190])
+        open(os.path.join(tmp, "surfaces.yml"), "w").write(
+            surf11(licence="CC0-1.0", licence_url=f"{base}/licence.html"))   # THE FIX
+        cycle(tmp)
+        check("A11 run 2 EVALUATES it: refused -> reconsidered -> evaluated",
+              classes11(store11)[:4] == ["discovered", "refused", "reconsidered", "evaluated"],
+              f"classes={classes11(store11)}")
+        seen11, found11 = section11(tmp, "## seen again"), section11(tmp, "## found")
+        check("A11 the report puts it under FOUND, not under 'seen again'",
+              "reopen_genes" not in seen11
+              and "REOPENED by 'reconsidered' from 'refused'" in found11,
+              "seen again: " + seen11.replace("\n", " ")[:130])
+        # `admitted` is SETTLED: a re-observation of it is a count/release question, and the report
+        # must say that in words rather than leave the operator guessing at 'not new'.
+        tmp2 = os.path.join(tmpdir, "a11-admitted")
+        tree(tmp2, surf_yaml=surf11(licence="CC0-1.0", licence_url=f"{base}/licence.html"),
+             provider=PROV)
+        registry11("add-event", "--store", os.path.join(tmp2, "store"), "--class", "admitted",
+                   "--source", "reopen_genes", "--release", "lease-1", "--origin", "backfill",
+                   "--why", "the fixture admits it before the sweep")
+        cycle(tmp2)
+        admitted11 = section11(tmp2, "## seen again")
+        check("A11 a candidate whose last state is `admitted` is still SKIPPED, naming 'admitted'",
+              "'admitted'" in admitted11 and "CANNOT be reopened" in admitted11
+              and "reopen_genes" in admitted11, admitted11.replace("\n", " ")[:190])
+        # ... and a candidate the diary has NEVER seen is untouched by any of this.
+        tmp3 = os.path.join(tmpdir, "a11-fresh")
+        tree(tmp3, surf_yaml=surf11(licence="CC0-1.0", licence_url=f"{base}/licence.html"),
+             provider=PROV)
+        cycle(tmp3)
+        check("A11 a candidate with NO prior state is unaffected (discovered -> evaluated)",
+              classes11(os.path.join(tmp3, "store"))[:2] == ["discovered", "evaluated"],
+              f"classes={classes11(os.path.join(tmp3, 'store'))}")
+
+        # ══ G4 · THE RATE LIMIT DOES NOT FIT THE BUDGET (DESIGN §3 step 3) ═══════════════════
+        print("\nG4 a source whose own rate needs more wall clock than the run has left — "
+              "REFUSED[rate-too-low] with the arithmetic, before any read", flush=True)
+        tmp = os.path.join(tmpdir, "g4")
+        tree(tmp, surf_yaml=listed(tmp).replace(
+            "count_endpoint:", "rate_limit: {requests_per_minute: 1, min_interval_s: 60}\n"
+                               "    count_endpoint:"), budget=(8, 4000000, 5), provider=PROV)
+        p = cycle(tmp)
+        check("G4 REFUSED[rate-too-low] is named with the wall arithmetic",
+              "REFUSED[rate-too-low]" in p.stdout and "wall clock" in p.stdout,
+              next((l for l in p.stdout.splitlines() if "rate-too-low" in l), "(none)"))
+        check("G4 nothing was drafted", not glob.glob(os.path.join(tmp, "drafts", "*.py")))
+
+        # ══ A12 · THE SECOND, NAMED SURFACE SET (req-P2-THE-AGING-SUBDOMAIN-SWEEP) ═══════════
+        # A deployment keeps a general registry and a subdomain one and switches the sentinel by ONE
+        # key, `surfaces.active`. What is asserted here is what a reader of the report can check:
+        # which registry the run read (its sha256 is in the report), which BUDGET was in force (the
+        # profile's DECLARED one, printed beside the file's own untouched one), that switching the
+        # one key changes the config sha256 AND the surface read, and that every way the switch can
+        # be wrong is REFUSED BY NAME rather than silently falling back to another surface set.
+        print("\nA12 a named surface set — `surfaces.active` selects which registry the run reads and "
+              "the profile's DECLARED budget is the one in force (printed beside the file's own)",
+              flush=True)
+        tmp = os.path.join(tmpdir, "a12")
+        aging_reg = os.path.join(tmp, "aging.txt")
+        # THE FIXTURE DIR COMES FIRST: `tree()` creates it below, so writing the subdomain registry
+        # before `tree()` was a FileNotFoundError that crashed the whole selftest at A12 (found by the
+        # lane req-P2-THE-AGING-SUBDOMAIN-SWEEP, 2026-11-22: 'aging.txt: No such file or directory'
+        # — the check could not run, so nothing after it could either).
+        os.makedirs(tmp, exist_ok=True)
+        open(aging_reg, "w").write("# the aging fixture registry\n"
+                                   "aging dataset\nlongevity database\n")
+        cfg12 = tree(tmp, queries=["topic:general-one"])
+        general_reg = cfg12["surfaces"]["registry"]
+        cfgp12 = os.path.join(tmp, "cycle.yml")
+
+        def write12(active: str, base_surfaces: dict | None = None, profiles: dict | None = None,
+                    with_profiles: bool = True) -> dict:
+            c = json.loads(json.dumps(cfg12))
+            s = dict(base_surfaces if base_surfaces is not None else c["surfaces"])
+            # `active` is set on EVERY fixture: `with_profiles=False` is the "names a profile the file
+            # does not declare" case, so it must still SELECT something (a fixture with neither key is
+            # the ordinary single-registry file and would prove nothing).
+            s["active"] = active
+            if with_profiles:
+                s["profiles"] = profiles if profiles is not None else {
+                    "general": {},
+                    "aging": dict(registry=aging_reg, per_page=25,
+                                  budget=dict(requests=200, bytes=20000000, wall_s=1500))}
+            # THE OVERLAY MUST LAND IN THE FILE THE RUN READS: `s` is a copy of `c["surfaces"]`, so
+            # without this assignment the fixture wrote the SAME bytes for every `active` and A12 was
+            # comparing a profile that never reached the config (found by the lane
+            # req-P2-THE-AGING-SUBDOMAIN-SWEEP, 2026-11-22: sha 3f… -> 3f…, 'no `surfaces.profiles`
+            # declared', and the run reading queries.txt while `active: aging` was asked for).
+            c["surfaces"] = s
+            open(cfgp12, "w").write(yaml.safe_dump(c, sort_keys=False))
+            return c
+
+        SEARCH.update(total_count=1, items=[
+            dict(full_name="fixture/aging-atlas", html_url=f"{base}/aa",
+                 license=dict(spdx_id="CC-BY-4.0"), archived=False,
+                 pushed_at="2026-11-01T00:00:00Z", stargazers_count=3,
+                 description="an atlas of aging transcriptomes, one row per sample",
+                 topics=["aging", "atlas", "transcriptome"])])
+        write12("aging")
+        p = cycle(tmp)
+        rep12 = "".join(open(f, encoding="utf-8").read()
+                        for f in glob.glob(os.path.join(tmp, "reports", "*.md")))
+        rec12 = json.load(open(os.path.join(tmp, "store", "cycle", "last.json"),
+                               encoding="utf-8"))
+        check("A12 the run reads the ACTIVE profile's registry, not the surface-level one",
+              rec12["profile"]["registry"].endswith("aging.txt")
+              and rec12["profile"]["registry_sha256"] == _sha_file(aging_reg),
+              rec12["profile"].get("registry", ""))
+        check("A12 the budget IN FORCE is the profile's DECLARED one (record + report agree)",
+              rec12["budget"] == dict(requests=200, bytes=20000000, wall_s=1500)
+              and "budget requests=200 bytes=20000000 wall_s=1500" in rep12
+              and "the DECLARED budget of profile `aging`" in rep12,
+              next((l for l in rep12.splitlines() if l.startswith("budget ")), "(no line)"))
+        check("A12 the file's own top-level budget is printed BESIDE it (not mutated)",
+              rec12["budget_file"] == dict(requests=8, bytes=4000000, wall_s=120)
+              and "the file's top-level budget is requests=8" in rep12)
+        check("A12 the report names the profile and the registry sha256 it read",
+              "profile `aging` (`surfaces.active`" in rep12
+              and f"surfaces `{os.path.relpath(aging_reg, FARM)}` sha256" in rep12
+              or ("profile `aging` (`surfaces.active`" in rep12
+                  and _sha_file(aging_reg)[:16] in rep12),
+              next((l for l in rep12.splitlines() if l.startswith("profile ")), "(no line)"))
+        check("A12 only the profile's two queries were sent, at the profile's per_page",
+              [q["query"] for q in rec12["queries"]] == ["aging dataset", "longevity database"]
+              and "per_page=25" in rec12["queries"][0]["url"],
+              str([q["url"] for q in rec12["queries"]][:1]))
+        ev12 = {e["full_name"]: e for e in rec12["evidence"]}
+        check("A12 the evidence ledger carries the surface's own words about the candidate",
+              ev12.get("fixture/aging-atlas", {}).get("description", "").startswith("an atlas")
+              and ev12["fixture/aging-atlas"].get("topics") == ["aging", "atlas", "transcriptome"]
+              and ev12["fixture/aging-atlas"].get("stars") == 3,
+              json.dumps(ev12.get("fixture/aging-atlas"), sort_keys=True)[:150])
+        check("A12 the evidence row names the class the candidate fell to",
+              ev12.get("fixture/aging-atlas", {}).get("refusal") == "no-count-endpoint",
+              f"refusal={ev12.get('fixture/aging-atlas', {}).get('refusal')!r}")
+        # ONE KEY SWITCHED: same file, one value, and the surface read AND the sha256 both change.
+        sha_aging = _sha_file(cfgp12)
+        write12("general")
+        cg = load_cycle(cfgp12)
+        check("A12 switching `active` changes which surface the cycle reads",
+              _path(cg, "surfaces", "registry") == general_reg,
+              _rel(_path(cg, "surfaces", "registry")))
+        check("A12 switching `active` changes the config sha256 (a run cannot be mistaken for the "
+              "other surface set), and the general profile inherits the file's own budget",
+              _sha_file(cfgp12) != sha_aging
+              and cg["budget"] == dict(requests=8, bytes=4000000, wall_s=120)
+              and cg["_profile"]["name"] == "general",
+              f"sha {sha_aging[:12]}… -> {_sha_file(cfgp12)[:12]}…")
+        write12("nope")
+        p = subprocess.run([sys.executable, "-m", "symbiont.cycle", "--status", "--config",
+                            cfgp12], cwd=FARM, capture_output=True, text=True, timeout=120)
+        check("A12 an `active` naming no declared profile is REFUSED by name (never a fallback)",
+              "REFUSED[surface-profile-unknown]" in p.stdout and "'nope'" in p.stdout
+              and "will not fall back" in p.stdout,
+              next((l for l in p.stdout.splitlines() if "surface-profile" in l), "(none)"))
+        write12("aging", profiles={"aging": dict(registry=aging_reg, **{"typo": 1})})
+        p = subprocess.run([sys.executable, "-m", "symbiont.cycle", "--status", "--config",
+                            cfgp12], cwd=FARM, capture_output=True, text=True, timeout=120)
+        check("A12 a profile carrying an unknown key is REFUSED[surface-profile]",
+              "REFUSED[surface-profile]" in p.stdout and "unknown key(s)" in p.stdout,
+              next((l for l in p.stdout.splitlines() if "surface-profile" in l), "(none)"))
+        write12("aging", with_profiles=False)
+        p = subprocess.run([sys.executable, "-m", "symbiont.cycle", "--status", "--config",
+                            cfgp12], cwd=FARM, capture_output=True, text=True, timeout=120)
+        check("A12 `active` with no `profiles` declared is REFUSED[surface-profile-unknown]",
+              "REFUSED[surface-profile-unknown]" in p.stdout
+              and "declares no" in p.stdout,
+              next((l for l in p.stdout.splitlines() if "surface-profile" in l), "(none)"))
+
+        # ══ THE DISABLED DEFAULT + THE GOVERNANCE REFUSAL (the row's own GATE) ════════════════
+        print("\nG1 the shipped default — enabled: false does NOTHING AT ALL", flush=True)
+        tmp = os.path.join(tmpdir, "g1")
+        tree(tmp, queries=["topic:x"], enabled=False)
+        p = cycle(tmp)
+        check("G1 exits 0 and says it did nothing",
+              p.returncode == 0 and "does nothing at all" in p.stdout, f"exit={p.returncode}")
+        check("G1 no report, no state, no store write",
+              not os.path.exists(os.path.join(tmp, "reports"))
+              and not os.path.exists(os.path.join(tmp, "store", "cycle")),
+              f"reports={os.path.exists(os.path.join(tmp, 'reports'))}")
+        print("\nG2 the governance gate — admit.by_policy: true with no ruling is REFUSED BY NAME",
+              flush=True)
+        tmp = os.path.join(tmpdir, "g2")
+        tree(tmp, surf_yaml=listed(tmp), provider=PROV, by_policy=True, ruling="")
+        p = cycle(tmp)
+        check("G2 exits 2 and REFUSED[governance] names the pending ruling",
+              p.returncode == 2 and "REFUSED[governance]" in p.stdout
+              and "PENDING" in p.stdout, f"exit={p.returncode}")
+        check("G2 nothing looked at, nothing spent, no report",
+              "I looked" not in p.stdout
+              and not os.path.exists(os.path.join(tmp, "reports")))
+        tmp = os.path.join(tmpdir, "g3")
+        tree(tmp, surf_yaml=listed(tmp), provider=PROV, by_policy=True,
+             ruling=os.path.join(FARM, "reports", "RULINGS",
+                                 "20261111-014502-2839278-May-the-SHIPPED-station-admit-a-data-sou.md"))
+        p = cycle(tmp)
+        check("G3 the REAL parked ruling does not count as a permission (REFUSED[governance])",
+              p.returncode == 2 and "REFUSED[governance]" in p.stdout
+              and "DOWNGRADED" in p.stdout, f"exit={p.returncode}")
+    finally:
+        srv.shutdown()
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        shutil.rmtree(os.path.dirname(PROV), ignore_errors=True)
+    ok = sum(1 for _, good in results if good)
+    print(f"\nRESULT: {ok} passed, {len(results) - ok} failed", flush=True)
+    return 0 if ok == len(results) else 1
+
+
+# ═══════════════════════════════════════════════════════════ the CLI
+def recount(*, url: str = "", path: str = "", member: str = "", fmt: str = "",
+            notes_member: str = "", stated_phrase: str = "", budget: dict | None = None) -> int:
+    """`python3 -m symbiont.cycle recount …` — THE PUBLISHED RE-DERIVATION COMMAND.
+
+    A file count is only evidence if a reader can reproduce it, so the number the cycle publishes
+    is printed next to the command that re-derives it FROM THE SAME BYTES. This runs the same
+    `count_dump` the cycle ran (one derivation site), so a disagreement between the published
+    count and this line is a real disagreement and not two implementations arguing."""
+    src = path or url
+    data = b""
+    if path:
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError as e:
+            print(f"REFUSED[file-unreadable] {path}: {type(e).__name__}: {e}")
+            return EXIT_REFUSED
+    else:
+        f = Fetcher(budget=dict(budget or dict(requests=2, bytes=64_000_000, wall_s=300)),
+                    rate_limit={"requests_per_minute": 10, "min_interval_s": 1.0})
+        try:
+            data = f.get(url, note="recount")
+        except (FetchError, contract.Refusal) as e:
+            print(f"REFUSED[network-down] {url}: {e}")
+            return EXIT_REFUSED
+    try:
+        got = count_dump(data, dict(data_member=member, format=fmt, notes_member=notes_member,
+                                   stated_count_phrase=stated_phrase))
+    except CycleRefused as e:
+        print(f"REFUSED[{e.code}] {src}: {e.detail}")
+        return EXIT_REFUSED
+    print(f"RECOUNT   {src}")
+    print(f"  bytes    {got['bytes']}")
+    print(f"  sha256   {got['sha256']}")
+    print(f"  member   {got['member']} ({got['format']})")
+    print(f"  records  {got['records']}")
+    if got["stated"] is not None:
+        print(f"  stated   {got['stated']} — “{got['stated_quote']}” in {got['notes_member']}")
+    print(f"RECOUNT-OK {got['records']} record(s) verified: file sha256={got['sha256']}")
+    return EXIT_OK
+
+
+def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "selftest":
+        return selftest()
+    if argv and argv[0] == "recount":
+        rp = argparse.ArgumentParser(
+            prog="symbiont.cycle recount",
+            description="re-derive a dump's count from the same bytes (the command published "
+                        "beside every `verified: file` count)")
+        rp.add_argument("--url", default="", help="the dump's address (read once, hashed)")
+        rp.add_argument("--file", default="", help="a copy already on disk")
+        rp.add_argument("--member", default="", help="the archive member whose records are counted")
+        rp.add_argument("--format", default="", choices=list(DUMP_FORMATS) + [""],
+                        help="the record format (else named by the member's extension)")
+        rp.add_argument("--notes-member", default="",
+                        help="the member where the publisher states its number")
+        rp.add_argument("--stated-phrase", default="",
+                        help="the publisher's own words before its stated count")
+        ra = rp.parse_args(argv[1:])
+        if not ra.url and not ra.file:
+            print("REFUSED[bad-input] recount needs --url or --file: there is nothing to count")
+            return EXIT_REFUSED
+        return recount(url=ra.url, path=ra.file, member=ra.member, fmt=ra.format,
+                       notes_member=ra.notes_member, stated_phrase=ra.stated_phrase)
+    ap = argparse.ArgumentParser(
+        prog="symbiont.cycle",
+        description="the sentinel cycle: one bounded run of watch (telemetry) and/or discover "
+                    "(candidates -> evaluate -> draft -> sandbox -> card -> admit-by-policy), on its "
+                    "own budget, writing one CYCLE-REPORT per run")
+    ap.add_argument("--mode", choices=list(MODES), default=None,
+                    help="watch | discover | both (default: the mode cycle.yml ships)")
+    ap.add_argument("--config", default=DEFAULT_CYCLE, help="the cycle config (default: cycle.yml)")
+    ap.add_argument("--status", action="store_true",
+                    help="print what the machine door's cycle_status reads, and exit")
+    a = ap.parse_args(argv)
+    if a.status:
+        print(status_text(a.config))
+        return EXIT_OK
+    try:
+        cfg = load_cycle(a.config)
+    except CycleRefused as e:
+        print(f"REFUSED[{e.code}] {e.detail}", flush=True)
+        return EXIT_REFUSED
+    return run_cycle(cfg, a.mode)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

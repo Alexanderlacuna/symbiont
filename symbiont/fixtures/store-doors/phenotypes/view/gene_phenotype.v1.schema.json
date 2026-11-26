@@ -1,0 +1,72 @@
+{
+ "columns": [
+  {
+   "name": "symbol",
+   "note": "MGI gene symbol \u2014 the xref table's join key",
+   "type": "string"
+  },
+  {
+   "name": "gene_id",
+   "note": "MGI accession (the xref accession the association is anchored on)",
+   "type": "string"
+  },
+  {
+   "name": "ensembl_gene_id",
+   "note": "Ensembl gene id from the gene arm's xref table",
+   "type": "string"
+  },
+  {
+   "name": "phenotype_term_id",
+   "note": "the ontology term id \u2014 the item's accession (MP:\u2026)",
+   "type": "string"
+  },
+  {
+   "name": "phenotype_term",
+   "note": "the term's own name from the term authority",
+   "type": "string"
+  },
+  {
+   "name": "evidence_code",
+   "note": "the source's evidence token for the association",
+   "type": "string"
+  },
+  {
+   "name": "citation",
+   "note": "the source's own citation (PubMed id as the source writes it); '' when none",
+   "type": "string"
+  },
+  {
+   "name": "allele_marker_id",
+   "note": "the allele/marker accession(s) the source names",
+   "type": "string"
+  },
+  {
+   "name": "statement",
+   "note": "the source's own statement, quoted, short",
+   "type": "string"
+  },
+  {
+   "name": "source",
+   "note": "which association source published this row",
+   "type": "string"
+  },
+  {
+   "name": "source_release",
+   "note": "that source's release stamp \u2014 the item's release",
+   "type": "string"
+  },
+  {
+   "name": "fetched_at",
+   "note": "when the record was first stored",
+   "type": "string"
+  }
+ ],
+ "description": "the query shape on the door (SCHEMA.md \u00a73): gene \u2192 phenotypes with evidence, one row per (gene, term, source) record. Every item carries its accession (the MP term id, plus both gene accessions) and its release.",
+ "key": [
+  "symbol",
+  "phenotype_term_id",
+  "source"
+ ],
+ "version": 1,
+ "view": "gene_phenotype"
+}

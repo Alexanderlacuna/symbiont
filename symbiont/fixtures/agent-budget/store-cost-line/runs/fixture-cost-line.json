@@ -1,0 +1,112 @@
+{
+  "agent_tasks": [
+    {
+      "caps": {
+        "max_calls": 80,
+        "max_rounds": 20,
+        "max_wall_s": 1800,
+        "no_progress_rounds": 3
+      },
+      "exit": "done",
+      "policy": {
+        "path": "/home/kabui/app-farm/reports/symbiont-policy.yml",
+        "sha256": "7f89f12b2ed7337f5b298e0a5bb1080e1f42ba1a2e7b8a547c2df18cdd286399"
+      },
+      "refused": null,
+      "rounds": [
+        {
+          "bytes": 50,
+          "calls": 1,
+          "new_accession_ids": [
+            "acc-0"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "one new accession",
+          "round": 1,
+          "tokens": 10,
+          "wall_seconds": 0.0
+        },
+        {
+          "bytes": 50,
+          "calls": 1,
+          "new_accession_ids": [
+            "acc-1"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "one new accession",
+          "round": 2,
+          "tokens": 10,
+          "wall_seconds": 0.0
+        },
+        {
+          "bytes": 50,
+          "calls": 1,
+          "new_accession_ids": [
+            "acc-2"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "one new accession",
+          "round": 3,
+          "tokens": 10,
+          "wall_seconds": 0.0
+        },
+        {
+          "bytes": 50,
+          "calls": 1,
+          "new_accession_ids": [
+            "acc-3"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "one new accession",
+          "round": 4,
+          "tokens": 10,
+          "wall_seconds": 0.0
+        },
+        {
+          "bytes": 50,
+          "calls": 1,
+          "new_accession_ids": [
+            "acc-4"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "one new accession",
+          "round": 5,
+          "tokens": 10,
+          "wall_seconds": 0.0
+        }
+      ],
+      "task": "fixture:one-per-round",
+      "totals": {
+        "bytes": 250,
+        "calls": 5,
+        "new_accessions": 5,
+        "new_records": 0,
+        "rounds": 5,
+        "tokens": 50,
+        "wall_seconds": 0.0
+      }
+    }
+  ],
+  "cost": {
+    "bytes_in": 250,
+    "new_accessions": 5,
+    "new_records": 0,
+    "note": "the manifest's own cost shape (requests/bytes_in/wall_seconds), extended to agent tasks with tokens/rounds/new_accessions/new_records",
+    "requests": 5,
+    "rounds": 5,
+    "tokens": 50,
+    "wall_seconds": 0.0
+  },
+  "finished_at": "2026-11-10T12:00:38.341316+00:00",
+  "kind": "agent-task",
+  "question": "agent-budget fixture",
+  "refusals": [],
+  "run_id": "fixture-cost-line",
+  "started_at": "2026-11-10T12:00:38.341166+00:00",
+  "task": "fixture:one-per-round"
+}

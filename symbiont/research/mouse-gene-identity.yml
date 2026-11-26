@@ -1,0 +1,65 @@
+# THE RESEARCH SPEC — what THIS investigation requires (req-P1-THE-RESEARCH-SPEC-what-a-question-req).
+#
+# A FIRST-CLASS, VERSIONED ARTEFACT BESIDE sources.yml, and deliberately a different kind of file:
+#
+#   sources.yml            is DOMAIN-NEUTRAL: which datasets exist, admitted, trusted, at which
+#                          release, under which licence, within which budget.
+#   research/<id>.yml      is THIS INVESTIGATION: which of those datasets the question REQUIRES,
+#                          which are merely optional, over which arms, species, term sets and date
+#                          cutoff.
+#
+# It carries REQUIREMENTS ONLY. It never names a release: the release pins are resolved at run time
+# and written into the run record, so the same spec re-run against a newer release is the SAME
+# investigation (spec_sha256 unchanged), and an edited spec is a NEW one (its sha changes).
+# A release smuggled in here — `mgi:MRK_ENSEMBL@2026-11-09` — is REFUSED BY NAME.
+#
+# OPTIONALITY IS DECLARED BEFORE THE RUN, NEVER DECIDED AFTER SEEING THE RESULTS. optional_datasets
+# is inside the hash, so flipping a dataset from required to optional after the fact changes
+# spec_sha256 and the run record stops matching the file: that is a different investigation, and the
+# manifest says so (`spec_changed_since_run`) rather than quietly re-reading the old runs under the
+# new, weaker spec.
+#
+# COVERAGE IS PROVED, NOT HOPED FOR:
+#   a missing REQUIRED dataset  -> REFUSED[missing-dataset], naming this spec and the dataset,
+#                                  listing what WAS available, ACQUISITION NOT STARTED
+#   a missing OPTIONAL dataset  -> allowed, but named in the manifest's coverage.missing[] with
+#                                  complete: false / status "partial"
+#
+# THIS FILE'S HASH IS STABLE UNDER REFORMATTING: comments (like this header), key order, indentation,
+# block-vs-flow YAML style and blank lines are all gone after the parse, and the canonicaliser sorts
+# keys, collapses whitespace and sorts the dataset/term SETS. Everything in this header could be
+# deleted, or every key below re-ordered, and spec_sha256 would not move. Nothing in this file is
+# a release pin — that is the point of it.
+
+research_id: mouse-gene-identity
+question: Which mouse genes have a stable, publishable identity and position for the gene identity arm?
+version: 1
+
+# ALL THREE arms are DECLARED — an arm this investigation does not do is `null`, never omitted.
+arms:
+  gene_identity: "Publish one row per gene — symbol, MGI accession, Ensembl gene id, chromosome, start, end."
+  phenotype_ontology: null    # NO DATASET IS ADMITTED FOR THIS ARM YET — see optional_datasets below
+  literature: null            # out of scope for this spec; declared, not implied
+
+filters:
+  species: Mus musculus
+  term_sets:
+    gene_identity:
+      - protein_coding
+      - gene
+    phenotype_ontology: []    # no terms until the ontology dataset is admitted
+    literature: []
+  date_cutoff: 2026-01-01
+
+# WHAT THE QUESTION CANNOT BE ANSWERED WITHOUT. These two are the admitted, enabled registry
+# entries: ensembl_biomart (ensembl:mmusculus_gene_ensembl) is the id authority, mgi (mgi:MRK_ENSEMBL)
+# is the xref provider. If either is switched off or quarantined, the run REFUSES before spending.
+required_datasets:
+  - ensembl:mmusculus_gene_ensembl
+  - mgi:MRK_ENSEMBL
+
+# WANTED, NOT REQUIRED. The Mammalian Phenotype ontology would let the phenotype arm run; it is not
+# admitted to sources.yml yet, so it is declared OPTIONAL here — decided now, in advance, and
+# visible in every manifest this spec produces as complete: false / status "partial".
+optional_datasets:
+  - mp:mp.obo

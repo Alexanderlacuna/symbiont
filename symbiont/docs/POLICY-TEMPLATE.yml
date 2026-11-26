@@ -1,0 +1,48 @@
+# SYMBIONT ADMISSION POLICY — THE TEMPLATE (all numbers BLANK)
+#
+# This is the blank form. Copy it, fill the numbers as the OWNER, and point the station at it
+# (admission.py --policy <file>, or replace the live policy file). The station READS this file and
+# never writes it; it invents, defaults and rounds NOTHING. Every number you do not set stays
+# `null`, and `null` is NOT a permission — that is the fail-closed rule:
+#
+#   · stable_cycles_before_self_admit null -> the station REFUSES every self-admission BY NAME
+#     until the owner writes N (the operator's word is then the only way in, quoted on the receipt).
+#   · max_sources_active / max_new_sources_per_cycle null -> no cap is enforced, because a cap
+#     the owner has not set does not exist to enforce.
+#   · a policy that is missing, unreadable or MALFORMED fails closed for SELF-admission only:
+#     the parse error is named on stdout, nothing self-admits, and the operator's word still works.
+#
+# An unknown key anywhere below is REFUSED by name at load time — the station will not run over
+# a policy it could not fully read.
+
+version: 1
+
+policy:
+  # ── the numbers the OWNER has not set — null everywhere, fail closed ──
+  stable_cycles_before_self_admit: null   # N: consecutive stable cycles before a source may self-admit
+  max_sources_active: null                 # cap on enabled, non-quarantined sources (null = no cap)
+  max_new_sources_per_cycle: null          # cap on self-admissions per cycle/UTC day (null = no cap)
+
+  # ── the rules (the owner may strike a check from the list; licence_must_be_read stays) ──
+  licence_must_be_read: true               # terms unread = no data (test T6), never waived
+  card_checks_required:                   # EVERY one must read `ok` on the card
+    - licence
+    - count_match
+    - sample_rows
+    - xref_rate
+    - cost
+
+  # ── the loop's automatic quarantine thresholds — required by the reader (int >= 1 / bool).
+  #    The loop's shipped rule is twice-in-a-row (a failure is quarantined on its SECOND
+  #    consecutive occurrence, evidence attached); these two keys record the owner's numbers
+  #    for it and are echoed in every admission record.
+  quarantine_after_count_mismatches: 2    # count-check disagreements in a row before quarantine
+  quarantine_after_rate_breach: true      # a rate/budget breach twice in a row quarantines
+
+  # ── RETENTION (req-P1-RETENTION-AND-SUPERSEDE-what-current) — blank in the template: the
+  #    owner fills N (releases kept per source) and states the disk consequence in MB with the
+  #    arithmetic shown. null is NOT a permission: the retention sweep fails closed and drops
+  #    NOTHING until the owner writes both numbers (symbiont/retention.py reads them, never
+  #    invents them). ──
+  retention_releases_per_source: null     # N: releases kept per source (null = the sweep refuses)
+  retention_disk_consequence_mb: null     # the ceiling N implies for raw/, stated in MB

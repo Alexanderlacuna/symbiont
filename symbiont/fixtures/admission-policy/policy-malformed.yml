@@ -1,0 +1,6 @@
+# FIXTURE — a policy file that cannot be parsed: the station must fail closed and NAME the
+# parse error (an unclosed flow mapping).
+version: 1
+
+policy: {
+  stable_cycles_before_self_admit: 2

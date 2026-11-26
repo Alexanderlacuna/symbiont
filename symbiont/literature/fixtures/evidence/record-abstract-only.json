@@ -1,0 +1,19 @@
+{
+  "pmid": "99991001",
+  "doi": "10.0/fixture.abstract-only.1",
+  "title": "A fixture study of a gene in the mouse gonad.",
+  "year": "2024",
+  "journal": "Fixture Journal",
+  "pmcid": "",
+  "open_access": "yes",
+  "licence": "cc by",
+  "abstract": "The gene is expressed in mouse gonadal somatic cells during embryonic development. This review of the field summarises what is known about its roles in organogenesis. We describe the expression pattern and discuss the open questions for future work.",
+  "abstract_withheld_reason": "",
+  "evidence_level": "abstract",
+  "field_provenance": "metadata-only:pmid,doi,title,year,journal,open_access,licence;abstract:abstract",
+  "fulltext_sha256": "",
+  "fulltext_source": "",
+  "fulltext_unavailable_reason": "not demanded - fixture row",
+  "source_release": "2026-11-10 + @cyanheads/pubmed-mcp-server@2.12.0",
+  "first_seen_run": "fixture"
+}

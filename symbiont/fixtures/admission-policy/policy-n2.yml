@@ -1,0 +1,18 @@
+# FIXTURE — the owner HAS set N=2 (req-P1-ADMISSION-POLICY-the-N-stable-cycles).
+# Same schema as the shipped reports/symbiont-policy.yml; only N differs, so the proof
+# exercises the reader, not a second format.
+version: 1
+
+policy:
+  stable_cycles_before_self_admit: 2
+  max_sources_active: null
+  max_new_sources_per_cycle: null
+  licence_must_be_read: true
+  card_checks_required:
+    - licence
+    - count_match
+    - sample_rows
+    - xref_rate
+    - cost
+  quarantine_after_count_mismatches: 2
+  quarantine_after_rate_breach: true

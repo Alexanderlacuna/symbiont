@@ -1,0 +1,171 @@
+{
+  "_what": "THE AMR TEST'S OWN CANDIDATES, with their real field values (req-P1-THE-EVALUATOR-six-checks-in-code). These are DECLARATIONS AND RECORDED READINGS, not a live probe: the evaluator does not fetch (out of scope).",
+  "_provenance": [
+    "The field values are the ones the AMR discovery test read on 2026-11-11 (DISCOVERY TEST — antimicrobial resistance in East Africa, section 3, 'WHAT THE DATA SURFACES FOUND — and the six-point verdict').",
+    "TWO licence readings were re-read by the farm itself on 2026-11-20 and are quoted from the pages as fetched that day, with the sha256 of the fetched bytes: WHO's CC BY 4.0 terms (page) and Africa CDC's MAAP download page ('(c) All rights reserved Africa CDC', page).",
+    "The HF reading stays on the 2026-11-11 record: the same API answered HTTP 401 on 2026-11-20 (a token is required now), so the tag 'cc-by-4.0' is quoted from the reading that WAS made, and the 401 is written in the candidate's note rather than papered over.",
+    "Nothing here is fabricated: a field with no reading is marked with its kind ('stated', 'none') and the evaluator refuses it by name."
+  ],
+  "read_at": "2026-11-20",
+  "candidates": [
+    {
+      "id": "who-glass-amr",
+      "publisher": "WHO",
+      "shape": "portal",
+      "url": "https://data.who.int/dashboards/amr/surveillance",
+      "science": "the strongest one — a decade of per-country AMR counts (the AMR test's own words, recorded here so that the evaluator shows it does NOT judge it)",
+      "rows": {
+        "how": "the publisher's own words on the dashboard",
+        "where": "https://data.who.int/dashboards/amr/surveillance",
+        "quote": "all figures and underlying data are downloadable",
+        "read_at": "2026-11-11"
+      },
+      "count": {
+        "kind": "file",
+        "where": "https://data.who.int/dashboards/amr/surveillance",
+        "quote": "The data are organized in datasets and made available in machine-readable format (“Datasets”).",
+        "read_at": "2026-11-20",
+        "sha256": "18ee75c7667522895c1b2239e36879946787686404f8094a673727177394d631"
+      },
+      "release": {
+        "id": "2016-2023@2025-09-25",
+        "quote": "2016–2023 data, submitted by end 2024, updated 2025-09-25",
+        "read_at": "2026-11-11"
+      },
+      "licence": {
+        "how": "page",
+        "licence": "CC-BY-4.0",
+        "where": "https://data.who.int/dashboards/amr/surveillance",
+        "quote": "these Datasets are provided to you under a Creative Commons Attribution 4.0 International License (CC BY 4.0), with the additional terms below",
+        "read_at": "2026-11-20",
+        "sha256": "18ee75c7667522895c1b2239e36879946787686404f8094a673727177394d631",
+        "actor": "machine",
+        "note": "the same page carries the mandatory arbitration clause the AMR test recorded ('Any dispute relating to the interpretation or application of this license shall, unless amicably settled, be subject to conciliation')"
+      },
+      "schema": {
+        "kind": "columns",
+        "where": "the dashboard's per-dataset metadata (a documented data dictionary per Dataset)",
+        "quote": "documented per-dataset metadata",
+        "read_at": "2026-11-11"
+      },
+      "stable": {
+        "url": "https://data.who.int/dashboards/amr/surveillance",
+        "how": "dated-release",
+        "quote": "2016–2023 data, submitted by end 2024, updated 2025-09-25",
+        "read_at": "2026-11-11"
+      }
+    },
+    {
+      "id": "africa-cdc-maap",
+      "publisher": "Africa CDC",
+      "shape": "portal",
+      "url": "https://africacdc.org/download/mapping-antimicrobial-resistance-and-antimicrobial-use-partnership-maap-country-reports/",
+      "rows": {
+        "how": "the country reports themselves (16 PDFs)",
+        "where": "https://africacdc.org/download/mapping-antimicrobial-resistance-and-antimicrobial-use-partnership-maap-country-reports/",
+        "quote": "yes, but as PDF (16 files; Kenya 3.89 MB, Tanzania 4.19, Uganda 3.71)",
+        "read_at": "2026-11-11"
+      },
+      "count": {
+        "kind": "stated",
+        "where": "the MAAP country reports (PDF, study level)",
+        "quote": "819,584 AMR records, 205 labs, 2016-2019",
+        "read_at": "2026-11-11"
+      },
+      "release": {
+        "id": "",
+        "note": "a study edition, not a release stream"
+      },
+      "licence": {
+        "how": "page",
+        "licence": "all-rights-reserved",
+        "where": "https://africacdc.org/download/mapping-antimicrobial-resistance-and-antimicrobial-use-partnership-maap-country-reports/",
+        "quote": "© All rights reserved Africa CDC",
+        "read_at": "2026-11-20",
+        "sha256": "2a858bb98a29f3243b7dec36a6ae917291abbc05e1aad6bbe9bac48e09129b6f",
+        "actor": "machine",
+        "note": "readable, and restrictive: a readable licence is not a permission. No terms-of-use page exists on the site (the sitemap's 94 pages carry a privacy policy and no licence page); the reading recorded is the one the site publishes"
+      },
+      "schema": {
+        "kind": "none",
+        "note": "no machine schema (PDF)"
+      },
+      "stable": {
+        "url": "https://africacdc.org/download/mapping-antimicrobial-resistance-and-antimicrobial-use-partnership-maap-country-reports/",
+        "how": "archive",
+        "quote": "the 16 country-report PDFs are dated publications of one study edition, not a moving stream",
+        "read_at": "2026-11-11"
+      }
+    },
+    {
+      "id": "hf-africa-owid-glass",
+      "publisher": "Electric Sheep Africa (repackaging OWID→GLASS)",
+      "shape": "dataset",
+      "url": "https://huggingface.co/datasets/electricsheepafrica/africa-owid-glass-by-pathogen",
+      "derived": {
+        "authority": "who-glass-amr",
+        "via": "hf-electricsheepafrica"
+      },
+      "authority_line": "derived:who-glass-amr:via=hf-electricsheepafrica",
+      "authority_quote": "the HF snapshot is trivially machine-readable ... take WHO as the source of record, use the repackaging only as a convenience copy",
+      "rows": {
+        "how": "the dataset card",
+        "where": "https://huggingface.co/datasets/electricsheepafrica/africa-owid-glass-by-pathogen",
+        "quote": "100 observations, 29 African countries, 2016-2022",
+        "read_at": "2026-11-11"
+      },
+      "count": {
+        "kind": "file",
+        "where": "https://huggingface.co/datasets/electricsheepafrica/africa-owid-glass-by-pathogen",
+        "quote": "yes, explicitly (100 observations; per-country row counts) — the parquet counts itself",
+        "read_at": "2026-11-11"
+      },
+      "release": {
+        "id": "who-glass-amr@2016-2023",
+        "inherited_from": "who-glass-amr",
+        "note": "no release id of its own — a derived snapshot (the AMR test's own words)"
+      },
+      "licence": {
+        "how": "api",
+        "licence": "cc-by-4.0",
+        "where": "https://huggingface.co/api/datasets/electricsheepafrica/africa-owid-glass-by-pathogen",
+        "quote": "cc-by-4.0",
+        "read_at": "2026-11-11",
+        "actor": "machine",
+        "note": "the tag was read through the dataset API on 2026-11-11; on 2026-11-20 the same endpoint answered HTTP 401 (a token is required now), so this reading stands on the 2026-11-11 record"
+      },
+      "schema": {
+        "kind": "columns",
+        "where": "the dataset card's documented column types",
+        "quote": "yes, documented column types",
+        "read_at": "2026-11-11"
+      },
+      "stable": {
+        "url": "https://huggingface.co/datasets/electricsheepafrica/africa-owid-glass-by-pathogen",
+        "how": "immutable-asset",
+        "quote": "parquet files in the repo — a git revision pins the bytes",
+        "read_at": "2026-11-11"
+      }
+    },
+    {
+      "id": "mikeambasa1/amr-klebsiella-kenya",
+      "publisher": "a person, on a code host",
+      "shape": "repository",
+      "url": "https://github.com/mikeambasa1/amr-klebsiella-kenya",
+      "licence": "NOASSERTION",
+      "_note": "the AMR test's near miss: a KENYA AMR repository, REFUSED[licence-unreadable]"
+    },
+    {
+      "id": "ajlm-glass-2016-sheet",
+      "publisher": "the AJLM paper's authors",
+      "shape": "sheet",
+      "url": "https://docs.google.com/spreadsheets/d/(the paper's supplement)",
+      "rows": {"quote": "yes", "where": "a sheet in the supplement", "read_at": "2026-11-11"},
+      "licence": {"how": "none", "note": "unclear"},
+      "schema": {"kind": "none"},
+      "stable": {"url": "https://docs.google.com/spreadsheets/d/(the paper's supplement)",
+                 "how": "none", "note": "authors, via Google Sheets — fragile"},
+      "_note": "the AMR test's 'NOT admissible' row: no count, no release, unclear licence, no schema, fragile URL"
+    }
+  ]
+}

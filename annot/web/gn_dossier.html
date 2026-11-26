@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>annot — gene dossier (GN view)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.45 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 18px 22px 60px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { opacity: .7; margin-bottom: 14px; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-bottom: 16px; }
+  label { display: flex; flex-direction: column; font-size: 12px; opacity: .8; }
+  input, select, button { font: inherit; padding: 4px 6px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 18px; }
+  th, td { border-bottom: 1px solid rgba(128,128,128,.35); padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; opacity: .75; }
+  td.mono, code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 9px; font-size: 11px; border: 1px solid currentColor; }
+  .ok { color: #1a7f37; } .empty { color: #9a6700; } .error { color: #b42318; }
+  .warn { border-left: 3px solid #9a6700; padding: 6px 10px; margin-bottom: 14px; }
+  details pre { max-height: 320px; overflow: auto; padding: 10px; background: rgba(128,128,128,.12); }
+</style>
+</head>
+<body>
+<h1>annot — one core, this page is a reader</h1>
+<div class="sub">Every number below came from <code>GET /annot/&lt;tool&gt;</code> — the same JSON the CLI and the
+MCP server return, byte for byte. This page holds no genetics logic: it renders the response it is given.</div>
+
+<form id="q" onsubmit="return false;">
+  <label>tool
+    <select id="tool">
+      <option>gene_dossier</option><option>gene_xref</option><option>phenotype_evidence</option>
+      <option>publications_for</option><option>traits_containing</option><option>what_changed</option>
+    </select>
+  </label>
+  <label>gene / term / source<input id="arg" size="18" value="Trp53" placeholder="Trp53 or body weight"></label>
+  <label>since (what_changed)<input id="since" size="20" placeholder="2026-11-09T20:00:00Z"></label>
+  <label>limit<input id="limit" size="4" value="25"></label>
+  <button id="go">ask</button>
+</form>
+
+<div id="status"></div>
+<div id="notes"></div>
+<div id="rows"></div>
+<div id="prov"></div>
+<details><summary>the JSON this page rendered (verbatim)</summary><pre id="payload-text"></pre></details>
+
+<script>
+// ---- THE renderer: the only place a response becomes rows. Pure; exported for the headless proof.
+function annotArgs(tool, fields) {
+  fields = fields || {};
+  var a = {};
+  if (tool === "traits_containing") { if (fields.arg) a.term = fields.arg; }
+  else if (tool === "what_changed") { a.source = fields.arg || "all"; a.since = fields.since || ""; }
+  else if (fields.arg) a.gene = fields.arg;
+  if (fields.limit) a.limit = String(fields.limit);
+  return a;
+}
+
+function annotUrl(base, tool, fields) {
+  var a = annotArgs(tool, fields), qs = [];
+  Object.keys(a).sort().forEach(function (k) {
+    if (a[k] !== "" && a[k] !== undefined && a[k] !== null) {
+      qs.push(encodeURIComponent(k) + "=" + encodeURIComponent(a[k]));
+    }
+  });
+  return (base || "") + "/annot/" + tool + (qs.length ? "?" + qs.join("&") : "");
+}
+
+// one row per item, whatever the tool: sections are flattened, provenance stays separate
+function rowsFromPayload(p) {
+  var rows = [];
+  function push(section, it) {
+    rows.push({section: section, value: it.value, accession: it.accession, source: it.source,
+               release: it.release, fetched_at: it.fetched_at, sha256: it.sha256});
+  }
+  if (p && p.sections) {
+    Object.keys(p.sections).sort().forEach(function (name) {
+      var s = p.sections[name] || {};
+      (s.items || []).forEach(function (it) { push(name, it); });
+    });
+  } else if (p && p.items) {
+    p.items.forEach(function (it) { push(p.annot && p.annot.tool || "items", it); });
+  }
+  return rows;
+}
+
+function provenanceRows(p) {
+  var out = [];
+  var prov = (p && p.provenance) || {};
+  out.push(["view", (prov.view && prov.view.name) + " v" + (prov.view && prov.view.version) +
+            " · " + (prov.view && prov.view.rows) + " rows · sha256 " + (prov.view && prov.view.sha256)]);
+  Object.keys(prov.sources || {}).sort().forEach(function (k) {
+    var s = prov.sources[k];
+    out.push([k, s.release + " · fetched_at " + s.fetched_at + " · sha256 " +
+              Object.keys(s.sha256 || {}).map(function (r) { return r + "=" + s.sha256[r]; }).join(" ")]);
+  });
+  (prov.unreachable || []).forEach(function (u) {
+    out.push(["UNREACHABLE " + u.source, u.why + " — needed: " + u.needed]);
+  });
+  return out;
+}
+
+function esc(s) {
+  return String(s === undefined || s === null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function paint(p) {
+  var st = (p && p.status) || "error";
+  document.getElementById("status").innerHTML =
+    '<span class="pill ' + esc(st) + '">' + esc(st) + "</span> " +
+    (p.reason ? '<code>' + esc(p.reason) + "</code> " : "") +
+    esc(p.annot ? p.annot.tool : "");
+  document.getElementById("notes").innerHTML =
+    (p.message ? '<div class="warn">' + esc(p.message) + "</div>" : "") +
+    (p.counts ? '<div class="sub">counts: <code>' + esc(JSON.stringify(p.counts)) + "</code></div>" : "");
+
+  var rows = rowsFromPayload(p), h = "";
+  if (rows.length) {
+    h += "<table><thead><tr><th>section</th><th>value</th><th>accession</th><th>source</th>" +
+         "<th>release</th><th>fetched_at</th><th>sha256</th></tr></thead><tbody>";
+    rows.forEach(function (r) {
+      h += "<tr><td>" + esc(r.section) + "</td><td>" + esc(r.value) + '</td><td class="mono">' +
+           esc(r.accession) + "</td><td>" + esc(r.source) + "</td><td>" + esc(r.release) +
+           '</td><td class="mono">' + esc(r.fetched_at) + '</td><td class="mono">' +
+           esc((r.sha256 || "").slice(0, 16)) + "…</td></tr>";
+    });
+    h += "</tbody></table>";
+  } else {
+    h = '<div class="warn">this response has no items — it is a NAMED empty result (see reason above), ' +
+        "not a blank page</div>";
+  }
+  h += "<table><thead><tr><th>provenance</th><th>value</th></tr></thead><tbody>";
+  provenanceRows(p).forEach(function (r) {
+    h += "<tr><td>" + esc(r[0]) + '</td><td class="mono">' + esc(r[1]) + "</td></tr>";
+  });
+  h += "</tbody></table>";
+  document.getElementById("rows").innerHTML = h;
+}
+
+// ---- browser wiring: fetch the route, paint it, keep the verbatim bytes on the page
+function ask() {
+  var tool = document.getElementById("tool").value;
+  var fields = {arg: document.getElementById("arg").value,
+                since: document.getElementById("since").value,
+                limit: document.getElementById("limit").value};
+  var url = annotUrl("", tool, fields);
+  fetch(url).then(function (r) { return r.text(); }).then(function (text) {
+    document.getElementById("payload-text").textContent = text;
+    paint(JSON.parse(text));
+  }).catch(function (e) {
+    document.getElementById("status").textContent = "fetch failed: " + e;
+  });
+  return false;
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {rowsFromPayload: rowsFromPayload, provenanceRows: provenanceRows,
+                    annotUrl: annotUrl, annotArgs: annotArgs};
+} else if (typeof document !== "undefined" && document.getElementById) {
+  var boot = function () {
+  document.getElementById("go").addEventListener("click", ask);
+  // server-rendered form: annot page --gene X embeds the exact response bytes
+  var embedded = document.getElementById("annot-payload");
+  if (!embedded) { ask(); return; }
+  if (embedded) {
+    document.getElementById("payload-text").textContent = embedded.textContent;
+    var p = JSON.parse(embedded.textContent);
+    if (p.query) {
+      document.getElementById("tool").value = (p.annot && p.annot.tool) || "gene_dossier";
+      document.getElementById("arg").value = p.query.gene || p.query.term || p.query.source || "";
+      if (p.query.since) document.getElementById("since").value = p.query.since;
+      if (p.query.limit) document.getElementById("limit").value = p.query.limit;
+    }
+    paint(p);
+  }
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else { boot(); }
+}
+</script>
+<!--ANNOT_PAYLOAD-->
+</body>
+</html>

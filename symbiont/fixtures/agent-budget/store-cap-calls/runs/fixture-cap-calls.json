@@ -1,0 +1,94 @@
+{
+  "agent_tasks": [
+    {
+      "caps": {
+        "max_calls": 80,
+        "max_rounds": 20,
+        "max_wall_s": 1800,
+        "no_progress_rounds": 3
+      },
+      "exit": "refused",
+      "policy": {
+        "path": "/home/kabui/app-farm/reports/symbiont-policy.yml",
+        "sha256": "7f89f12b2ed7337f5b298e0a5bb1080e1f42ba1a2e7b8a547c2df18cdd286399"
+      },
+      "refused": {
+        "code": "cap-calls",
+        "reason": "calls 90 exceed the declared cap agent_max_calls=80 at round 3"
+      },
+      "rounds": [
+        {
+          "bytes": 500,
+          "calls": 30,
+          "new_accession_ids": [
+            "acc-0"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "progress, but spendy",
+          "round": 1,
+          "tokens": 100,
+          "wall_seconds": 0.0
+        },
+        {
+          "bytes": 500,
+          "calls": 30,
+          "new_accession_ids": [
+            "acc-1"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "progress, but spendy",
+          "round": 2,
+          "tokens": 100,
+          "wall_seconds": 0.0
+        },
+        {
+          "bytes": 500,
+          "calls": 30,
+          "new_accession_ids": [
+            "acc-2"
+          ],
+          "new_accessions": 1,
+          "new_records": 0,
+          "note": "progress, but spendy",
+          "round": 3,
+          "tokens": 100,
+          "wall_seconds": 0.0
+        }
+      ],
+      "task": "fixture:cap-breach-calls",
+      "totals": {
+        "bytes": 1500,
+        "calls": 90,
+        "new_accessions": 3,
+        "new_records": 0,
+        "rounds": 3,
+        "tokens": 300,
+        "wall_seconds": 0.0
+      }
+    }
+  ],
+  "cost": {
+    "bytes_in": 1500,
+    "new_accessions": 3,
+    "new_records": 0,
+    "note": "the manifest's own cost shape (requests/bytes_in/wall_seconds), extended to agent tasks with tokens/rounds/new_accessions/new_records",
+    "requests": 90,
+    "rounds": 3,
+    "tokens": 300,
+    "wall_seconds": 0.0
+  },
+  "finished_at": "2026-11-10T12:00:43.413280+00:00",
+  "kind": "agent-task",
+  "question": "",
+  "refusals": [
+    {
+      "code": "cap-calls",
+      "reason": "calls 90 exceed the declared cap agent_max_calls=80 at round 3"
+    }
+  ],
+  "run_id": "fixture-cap-calls",
+  "started_at": "2026-11-10T12:00:43.413092+00:00",
+  "task": "fixture:cap-breach-calls"
+}

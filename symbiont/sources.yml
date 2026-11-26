@@ -1,0 +1,208 @@
+
+version: 1
+
+sources:
+  - id: ensembl_biomart
+    adapter: ensembl_biomart
+    publisher: ensembl
+    dataset: mmusculus_gene_ensembl
+    enabled: true
+    note: "id authority: Ensembl ids + coordinates. The data query and the count query are the SAME request (count=1), built onto base_url by the adapter, so a mirror that serves /biomart/martservice is repointed by changing base_url alone."
+    base_url: https://www.ensembl.org/biomart/martservice
+    endpoints:
+      mart: "."
+      metadata: "https://rest.ensembl.org/info/software?content-type=application/json"
+    storage:
+      mart:
+        class: store
+        reason: "licence permits storage: no restrictions on access or use"
+      metadata:
+        class: store
+        reason: "licence permits storage: no restrictions on access or use"
+    rate_limit:
+      requests_per_minute: 20
+      min_interval_s: 3.0
+    licence_url: https://www.ensembl.org/info/about/legal/disclaimer.html
+    licence_text: "Ensembl data: no restrictions on access or use"
+    staleness:
+      policy_days: 120
+    budget:
+      requests: 12
+      bytes: 40000000
+      wall_s: 600
+    quarantined: null
+  - id: eurostat_gdp
+    adapter: eurostat_gdp
+    kind: mapping
+    mapping:
+      role: dataset
+      urls:
+        - "gdp"
+      archive: none
+      delimiter: ","
+      header: true
+      columns:
+        key: "geo"
+        period: "TIME_PERIOD"
+        place: "geo"
+        source_release: "LAST UPDATE"
+        subject: "geo"
+        trait: "na_item"
+        unit: "unit"
+        value: "OBS_VALUE"
+      release:
+        kind: literal
+        value: "NAMA_10_GDP(1.0) last update 11/11/26"
+      count:
+        kind: file
+      licence_pattern: "Creative Commons Attribution 4\\.0 International licence"
+    publisher: eurostat
+    dataset: measurement
+    enabled: false
+    note: "A MEASUREMENT (role: dataset) — ONE series: Eurostat nama_10_gdp, GDP at market prices (na_item B1G), current prices in million euro (unit CP_MEUR), annual 2020-2024, every geo the publisher carries. WHAT A MEASUREMENT ROW IS NOT (deliverable 3 of req-P2-E5-A): (1) it is NOT a claim about causation — a value beside a year and a place says the publisher published that number, and nothing about why it moved; (2) its UNIT IS THE PUBLISHER'S (CP_MEUR = current prices, million euro), carried verbatim and never converted, rescaled or restated by us; (3) it is NOT a gene-keyed row and joins nothing — role 'dataset' means these rows ARE the claim, so no xref join runs. The whole note is symbiont/docs/MEASUREMENT.md. Activate it by SELECTION on a copy of this config (`enabled: false -> true`) and `--sources eurostat_gdp`."
+    base_url: https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/
+    endpoints:
+      gdp: "nama_10_gdp/A.CP_MEUR.B1G.?startPeriod=2020&endPeriod=2024&format=SDMX-CSV"
+    storage:
+      gdp:
+        class: store
+        reason: "licence permits storage: Eurostat data are reusable under CC BY 4.0 (attribution required)"
+    rate_limit:
+      requests_per_minute: 10
+      min_interval_s: 2.0
+    licence_url: https://ec.europa.eu/eurostat/help/copyright-notice
+    licence_text: "Eurostat data: reusable under the Creative Commons Attribution 4.0 International licence (CC BY 4.0), attribution required"
+    staleness:
+      policy_days: 400
+    budget:
+      requests: 6
+      bytes: 20000000
+      wall_s: 300
+    quarantined: null
+  - id: hprc_pangenomes
+    adapter: hprc_pangenomes
+    kind: mapping
+    mapping:
+      role: dataset
+      urls:
+        - "index"
+      archive: none
+      delimiter: ","
+      header: true
+      columns:
+        file_size: "file_size"
+        filename: "filename"
+        filetype: "filetype"
+        hprc_version: "hprc_version"
+        key: "alignment"
+        location: "location"
+        pipeline: "pipeline"
+        reference_coordinates: "reference_coordinates"
+      release:
+        kind: literal
+        value: "hprc-release2"
+      count:
+        kind: file
+      licence_pattern: "MIT"
+    publisher: human-pangenomics
+    dataset: pangenome_alignment
+    enabled: false
+    note: "STANDALONE DATASET (role: dataset): the HPRC release-2 pangenome graphs — one row per alignment (Minigraph-Cactus, PGGB, etc.), with its pipeline, reference coordinates and file size."
+    base_url: https://raw.githubusercontent.com/human-pangenomics/HPRC_intermediate_assembly/main/data_tables/
+    endpoints:
+      index: "pangenomes/alignments_v2.0.csv"
+    storage:
+      index:
+        class: store
+        reason: "licence permits storage: MIT (the HPRC intermediate-assembly repository's own LICENSE)"
+    rate_limit:
+      requests_per_minute: 20
+      min_interval_s: 1.0
+    licence_url: https://raw.githubusercontent.com/human-pangenomics/hprc_intermediate_assembly/main/LICENSE
+    licence_text: "HPRC intermediate assembly data: MIT License (Copyright (c) 2023 human-pangenomics)"
+    staleness:
+      policy_days: 730
+    budget:
+      requests: 6
+      bytes: 2000000
+      wall_s: 180
+    quarantined: null
+  - id: hprc_samples
+    adapter: hprc_samples
+    kind: mapping
+    mapping:
+      role: dataset
+      urls:
+        - "index"
+      archive: none
+      delimiter: ","
+      header: true
+      columns:
+        biosample_id: "biosample_id"
+        family_id: "family_id"
+        key: "sample_id"
+        population: "population_descriptor"
+        population_abbreviation: "population_abbreviation"
+        trio_available: "trio_available"
+      release:
+        kind: literal
+        value: "hprc-release2"
+      count:
+        kind: file
+      licence_pattern: "MIT"
+    publisher: human-pangenomics
+    dataset: sample
+    enabled: false
+    note: "STANDALONE DATASET (role: dataset): the 234 HPRC release-2 sample records — sample, biosample, population descriptor, trio status — the individuals behind the assemblies."
+    base_url: https://raw.githubusercontent.com/human-pangenomics/HPRC_intermediate_assembly/main/data_tables/
+    endpoints:
+      index: "sample/hprc_release2_sample_metadata.csv"
+    storage:
+      index:
+        class: store
+        reason: "licence permits storage: MIT (the HPRC intermediate-assembly repository's own LICENSE)"
+    rate_limit:
+      requests_per_minute: 20
+      min_interval_s: 1.0
+    licence_url: https://raw.githubusercontent.com/human-pangenomics/hprc_intermediate_assembly/main/LICENSE
+    licence_text: "HPRC intermediate assembly data: MIT License (Copyright (c) 2023 human-pangenomics)"
+    staleness:
+      policy_days: 730
+    budget:
+      requests: 6
+      bytes: 2000000
+      wall_s: 180
+    quarantined: null
+  - id: mgi
+    adapter: mgi
+    publisher: mgi
+    dataset: MRK_ENSEMBL
+    enabled: true
+    note: "xref provider: symbols, MGI accessions, MGI's own Ensembl xrefs, the withdrawn-marker list. Both release files are RELATIVE to base_url, so a mirror of the reports directory is repointed by changing base_url alone. MGI publishes no count endpoint and its release stamp is MRK_ENSEMBL.rpt's own Last-Modified, which is why metadata is that same file."
+    base_url: https://www.informatics.jax.org/downloads/reports/
+    endpoints:
+      metadata: "MRK_ENSEMBL.rpt"
+      mrk_ensembl: "MRK_ENSEMBL.rpt"
+      mrk_list1_gz: "MRK_List1.rpt.gz"
+    storage:
+      metadata:
+        class: store
+        reason: "licence permits storage: CC-BY 4.0 (attribution required)"
+      mrk_ensembl:
+        class: store
+        reason: "licence permits storage: CC-BY 4.0 (attribution required)"
+      mrk_list1_gz:
+        class: store
+        reason: "licence permits storage: CC-BY 4.0 (attribution required)"
+    rate_limit:
+      requests_per_minute: 20
+      min_interval_s: 3.0
+    licence_url: https://www.informatics.jax.org/mgihome/other/copyright.shtml
+    licence_text: "MGI data and annotations: CC-BY 4.0 (attribution required)"
+    staleness:
+      policy_days: 120
+    budget:
+      requests: 12
+      bytes: 400000000
+      wall_s: 900
+    quarantined: null

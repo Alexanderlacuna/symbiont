@@ -1,0 +1,12 @@
+# THE ADMISSION GATE — req-P1-SOURCE-HEALTH-AND-AGENT-ADDED-SOURCES
+#
+# source_admit is the ONE gated step of the agent-added-sources pipeline: probe, evaluate,
+# draft, sandbox and card are agent work, but flipping a source ACTIVE in sources.yml needs
+# the gate's word. AT FIRST the gate is the owner's line on record — the owner's own words
+# in this row (2026-11-10), quoted verbatim below; the ADMISSION-POLICY row will replace it
+# with policy (N stable cycles and every card check green).
+#
+# The word must be QUOTED to source_admit (--gate, or the `gate` argument of the MCP tool).
+# A refusal quotes this line back, so it is never a bare red; a successful admission records
+# the word on its receipt, so the gate's word is auditable after the fact.
+i want to be able to check health of the sources via agent, agent adds new sources etc, remove the human element from manually doing some stuff

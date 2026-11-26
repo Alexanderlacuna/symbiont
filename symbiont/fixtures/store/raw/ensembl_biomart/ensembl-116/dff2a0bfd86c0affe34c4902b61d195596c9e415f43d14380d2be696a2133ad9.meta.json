@@ -1,0 +1,13 @@
+{
+  "bytes": 313,
+  "etag": "",
+  "fetched_at": "2026-11-10T11:55:29.169478+00:00",
+  "filename": "biomart_mmusculus_gene.tsv",
+  "last_modified": "",
+  "release": "ensembl-116",
+  "reskey": "biomart_tsv",
+  "run_id": "arc-1",
+  "sha256": "dff2a0bfd86c0affe34c4902b61d195596c9e415f43d14380d2be696a2133ad9",
+  "source": "ensembl_biomart",
+  "url": "http://127.0.0.1:42997/ensembl/martservice?query=%3CQuery%20virtualSchemaName%3D%22default%22%20formatter%3D%22TSV%22%20header%3D%221%22%20uniqueRows%3D%221%22%20count%3D%22%22%20datasetConfigVersion%3D%220.6%22%3E%3CDataset%20name%3D%22mmusculus_gene_ensembl%22%20interface%3D%22default%22%3E%3CAttribute%20name%3D%22mgi_symbol%22%2F%3E%3CAttribute%20name%3D%22ensembl_gene_id%22%2F%3E%3CAttribute%20name%3D%22chromosome_name%22%2F%3E%3CAttribute%20name%3D%22start_position%22%2F%3E%3CAttribute%20name%3D%22end_position%22%2F%3E%3C%2FDataset%3E%3C%2FQuery%3E"
+}

@@ -1,0 +1,46 @@
+{
+  "columns": [
+    {
+      "name": "key",
+      "note": "the join key",
+      "type": "string"
+    },
+    {
+      "name": "biosample_id",
+      "note": "as published by the source (column 'biosample_id')",
+      "type": "string"
+    },
+    {
+      "name": "family_id",
+      "note": "as published by the source (column 'family_id')",
+      "type": "string"
+    },
+    {
+      "name": "population",
+      "note": "as published by the source (column 'population_descriptor')",
+      "type": "string"
+    },
+    {
+      "name": "population_abbreviation",
+      "note": "as published by the source (column 'population_abbreviation')",
+      "type": "string"
+    },
+    {
+      "name": "trio_available",
+      "note": "as published by the source (column 'trio_available')",
+      "type": "string"
+    }
+  ],
+  "description": "sample: one row per record this DATASET publishes. Standalone \u2014 the source declares role 'dataset', so its own normalised rows ARE the claim and no xref join was run. Rejected rows are NOT in this view: they are in the run record's normalise block and in rejects/<run>.<source>.tsv, each with the reason it was rejected.",
+  "key": [
+    "key"
+  ],
+  "resolution": [
+    "standalone: no join \u2014 one source's own rows, published as normalised (role: dataset)",
+    "every column is text: a mapping declares names, not types, so none is invented",
+    "a row with an empty key is a reject with a reason, counted \u2014 never a dropped row"
+  ],
+  "role": "dataset",
+  "version": 1,
+  "view": "sample"
+}

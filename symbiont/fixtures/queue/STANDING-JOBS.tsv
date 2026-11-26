@@ -1,0 +1,8 @@
+# FIXTURE QUEUE — NOT the farm's queue. reports/STANDING-JOBS.tsv is the farm's own governance
+# (DESIGN-STATION.md §1b: farm-only, never shipped), so a clone has no queue to point at. This
+# file exists only so selftest_sandbox F4b/F4c have a real file to refuse a write to when the
+# farm's queue is absent: the kernel refuses the append and this file must come out BYTE-
+# IDENTICAL (its sha256 is quoted before and after). Its rows are illustrative, never read.
+# Same header as the real queue so the shape a lane would target is recognisable.
+# id	app	job	brief	report	depends_on	state	priority	owner_only	class	phase-class	stream
+fixture-queue-1	factory	fixture job — a clone's stand-in for the farm queue	-	-	-	QUEUED	2	0	cheap	app	shipped
